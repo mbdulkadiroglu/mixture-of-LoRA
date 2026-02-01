@@ -1,0 +1,159 @@
+# Adaptive SLM Framework Configuration
+
+# Model Settings
+models:
+  teacher:
+    name: "gpt-5-mini"
+    api_base: "https://api.openai.com/v1"
+    max_tokens: 2048
+    temperature: 0.7
+
+  student:
+    name: "Qwen/Qwen2.5-14B-Instruct"
+    max_seq_length: 4096
+    load_in_4bit: true
+    dtype: "bfloat16"
+
+# Domain Configuration
+domains:
+  text_to_sql:
+    name: "Text-to-SQL"
+    description: "Convert natural language queries to SQL"
+    dataset: "spider"
+    evaluation_metric: "execution_accuracy"
+
+  math_reasoning:
+    name: "Mathematical Reasoning"
+    description: "Solve mathematical word problems"
+    dataset: "gsm8k"
+    evaluation_metric: "exact_match"
+
+  code_generation:
+    name: "Python Code Generation"
+    description: "Generate Python code from descriptions"
+    dataset: "mbpp"
+    evaluation_metric: "pass_at_k"
+
+# LoRA Configuration
+lora:
+  r: 32
+  lora_alpha: 32
+  lora_dropout: 0.0
+  target_modules:
+    - "q_proj"
+    - "k_proj"
+    - "v_proj"
+    - "o_proj"
+    - "gate_proj"
+    - "up_proj"
+    - "down_proj"
+  bias: "none"
+  use_gradient_checkpointing: "unsloth"
+  use_rslora: false
+
+# Training Configuration
+training:
+  # Online learning settings
+  online_learning: true
+  batch_size: 4
+  gradient_accumulation_steps: 4
+  effective_batch_size: 16  # batch_size * gradient_accumulation_steps
+
+  # Learning rate
+  learning_rate: 2.0e-4
+  warmup_ratio: 0.1
+  lr_scheduler_type: "cosine"
+
+  # Training epochs/steps
+  num_epochs: 3
+  max_steps: -1  # -1 means use num_epochs
+
+  # Optimization
+  optimizer: "adamw_8bit"
+  weight_decay: 0.01
+  max_grad_norm: 1.0
+
+  # Checkpointing
+  save_steps: 100
+  save_total_limit: 3
+
+  # Logging
+  logging_steps: 10
+
+  # Memory optimization
+  fp16: false
+  bf16: true
+
+  # Experience replay for continual learning
+  replay_buffer_size: 1000
+  replay_ratio: 0.2  # 20% of training data from replay buffer
+
+# Router Configuration
+router:
+  # Confidence threshold for routing to student
+  confidence_threshold: 0.7
+
+  # Method: "classifier", "perplexity", "self_eval"
+  routing_method: "self_eval"
+
+  # Self-evaluation prompt template
+  self_eval_prompt: |
+    You are evaluating whether a small language model can correctly answer a query.
+
+    Query: {query}
+    Domain: {domain}
+
+    Based on the complexity and your knowledge of similar queries, rate the confidence
+    that the small model can handle this correctly (0.0 to 1.0):
+
+  # Maximum retries if student fails
+  max_retries: 2
+
+# Adapter Manager Configuration
+adapter_manager:
+  # Base path for adapter storage
+  base_path: "data/lora_adapters"
+
+  # Adapter merging strategy: "none", "average", "task_arithmetic"
+  merge_strategy: "none"
+
+  # Maximum adapters to keep per domain
+  max_adapters_per_domain: 5
+
+  # Adapter selection: "latest", "best", "ensemble"
+  selection_strategy: "best"
+
+# Evaluation Configuration
+evaluation:
+  # Batch size for evaluation
+  batch_size: 8
+
+  # Number of samples for quick evaluation
+  quick_eval_samples: 100
+
+  # Full evaluation frequency (in training steps)
+  full_eval_frequency: 500
+
+  # Metrics to track
+  metrics:
+    - "accuracy"
+    - "exact_match"
+    - "bleu"
+    - "execution_accuracy"
+
+  # Spider database path for SQL execution evaluation
+  spider_db_dir: "spider_data/database"
+
+# System Configuration
+system:
+  # Random seed for reproducibility
+  seed: 42
+
+  # Number of workers for data loading
+  num_workers: 4
+
+  # Device configuration
+  device_map: "auto"
+
+  # Logging level
+  log_level: "INFO"

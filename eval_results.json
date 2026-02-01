@@ -1,0 +1,28 @@
+{
+  "timestamp": "2026-01-31T10:47:12.264773",
+  "config": {
+    "samples_per_domain": 100,
+    "domains": [
+      "text_to_sql"
+    ]
+  },
+  "results": {
+    "text_to_sql": {
+      "student_adapter": {
+        "score": 0.15,
+        "correct": 6,
+        "total": 40
+      },
+      "student_base": {
+        "score": 0.0,
+        "correct": 0,
+        "total": 40
+      },
+      "teacher": {
+        "score": 0.0,
+        "correct": 0,
+        "total": 40
+      }
+    }
+  }
+}
