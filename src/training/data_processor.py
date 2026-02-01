@@ -41,8 +41,8 @@ class DataProcessor:
 
         # Domain-specific system prompts
         self.system_prompts = {
-            "text_to_sql": """You are an expert SQL assistant. Convert natural language queries to SQL.
-Think step by step, then provide the final SQL query in a code block.""",
+            "text_to_sql": """You are an expert SQL assistant. Given a database schema and a natural language question, output only the SQL query. Do not include any explanation, formatting, or markdown. Output only valid SQLite SQL.""",
+            "text_to_sql_bird": """You are an expert SQL assistant. Given a database schema and a natural language question, output only the SQL query. Do not include any explanation, formatting, or markdown. Output only valid SQLite SQL.""",
             "math_reasoning": """You are a mathematics tutor. Solve problems step by step.
 Show your work clearly and provide the final numerical answer.""",
             "code_generation": """You are an expert Python programmer.
@@ -264,14 +264,14 @@ Provide clear and well-structured responses.""",
             else:
                 full_query = f"Convert this question to SQL: {question}"
 
-            # Format the SQL response
-            response = f"Based on the question, here's the SQL query:\n\n```sql\n{sql}\n```"
+            # Response is just raw SQL, no explanation or formatting
+            response = sql
 
             examples.append(
                 TrainingExample(
                     query=full_query,
                     response=response,
-                    domain="text_to_sql",
+                    domain="text_to_sql_bird",
                     metadata={"db_id": db_id, "source": "bird"},
                 )
             )

@@ -125,6 +125,7 @@ class DatasetLoader:
                     self._bird_schemas[db_id] = {
                         "tables": db["table_names_original"],
                         "columns": db["column_names_original"],
+                        "column_descriptions": db.get("column_names", db["column_names_original"]),
                         "column_types": db["column_types"],
                         "primary_keys": db.get("primary_keys", []),
                         "foreign_keys": db.get("foreign_keys", []),
@@ -136,13 +137,13 @@ class DatasetLoader:
 
     def get_bird_schema_string(self, db_id: str) -> str:
         """
-        Get a formatted schema string for a BIRD database.
+        Get a formatted schema string for a BIRD database in CREATE TABLE format.
 
         Args:
             db_id: Database identifier.
 
         Returns:
-            Formatted schema string for prompts.
+            Formatted schema string for prompts (SQLite CREATE TABLE syntax).
         """
         if db_id not in self._bird_schemas:
             return ""
@@ -150,22 +151,66 @@ class DatasetLoader:
         schema = self._bird_schemas[db_id]
         tables = schema["tables"]
         columns = schema["columns"]
+        column_descriptions = schema.get("column_descriptions", columns)
         column_types = schema["column_types"]
+        primary_keys = schema.get("primary_keys", [])
+        foreign_keys = schema.get("foreign_keys", [])
+
+        # Build column index to table mapping for FK resolution
+        col_to_table = {}
+        for col_idx, (table_idx, col_name) in enumerate(columns):
+            if table_idx >= 0:
+                col_to_table[col_idx] = (tables[table_idx], col_name)
+
+        # Flatten primary keys (can be int or list)
+        pk_set = set()
+        for pk in primary_keys:
+            if isinstance(pk, list):
+                pk_set.update(pk)
+            else:
+                pk_set.add(pk)
+
+        # Build FK mapping: column_idx -> (ref_table, ref_column)
+        fk_map = {}
+        for fk in foreign_keys:
+            if len(fk) == 2:
+                from_col, to_col = fk
+                if to_col in col_to_table:
+                    fk_map[from_col] = col_to_table[to_col]
 
         lines = []
         for table_idx, table_name in enumerate(tables):
-            # Get columns for this table
-            table_columns = []
+            col_defs = []
             for col_idx, (col_table_idx, col_name) in enumerate(columns):
                 if col_table_idx == table_idx:
-                    col_type = column_types[col_idx] if col_idx < len(column_types) else "text"
-                    table_columns.append(f"{col_name} ({col_type})")
+                    col_type = column_types[col_idx] if col_idx < len(column_types) else "TEXT"
+                    col_type = col_type.upper()
 
-            if table_columns:
-                lines.append(f"Table: {table_name}")
-                lines.append(f"  Columns: {', '.join(table_columns)}")
+                    # Get description if different from original name
+                    desc = ""
+                    if col_idx < len(column_descriptions):
+                        _, desc_name = column_descriptions[col_idx]
+                        if desc_name != col_name and desc_name != "*":
+                            desc = f"  -- {desc_name}"
 
-        return "\n".join(lines)
+                    # Check if primary key
+                    pk_suffix = " PRIMARY KEY" if col_idx in pk_set else ""
+
+                    # Check if foreign key
+                    fk_suffix = ""
+                    if col_idx in fk_map:
+                        ref_table, ref_col = fk_map[col_idx]
+                        fk_suffix = f" REFERENCES {ref_table}({ref_col})"
+
+                    col_defs.append(f"  {col_name} {col_type}{pk_suffix}{fk_suffix}{desc}")
+
+            if col_defs:
+                lines.append(f"CREATE TABLE {table_name} (")
+                lines.append(",\n".join(col_defs))
+                lines.append(");")
+                lines.append("")
+
+        return "\n".join(lines).strip()
 
     def get_schema_string(self, db_id: str) -> str:
         """
@@ -666,12 +711,12 @@ Convert this question to SQL: {question}"""
 
             if include_schema and db_id in self._bird_schemas:
                 schema_str = self.get_bird_schema_string(db_id)
-                prompt_parts.append(f"Given the following database schema:\n\n{schema_str}")
+                prompt_parts.append(f"Database schema:\n{schema_str}")
 
             if include_evidence and evidence:
                 prompt_parts.append(f"Hint: {evidence}")
 
-            prompt_parts.append(f"Convert this question to SQL: {question}")
+            prompt_parts.append(f"Question: {question}")
             prompt = "\n\n".join(prompt_parts)
 
             # Create training text in chat format
