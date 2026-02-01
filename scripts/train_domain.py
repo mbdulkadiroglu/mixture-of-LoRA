@@ -36,8 +36,8 @@ def parse_args():
         "--domain",
         type=str,
         required=True,
-        choices=["text_to_sql", "math_reasoning", "code_generation"],
-        help="Domain to train",
+        choices=["text_to_sql", "text_to_sql_bird", "math_reasoning", "code_generation"],
+        help="Domain to train (text_to_sql_bird uses BIRD dataset)",
     )
     parser.add_argument(
         "--config",
@@ -101,6 +101,9 @@ def main():
         domain_data = loader.load_spider(max_samples=args.max_samples)
         # Use 'prompt' which includes schema context, not raw 'question'
         query_key = "prompt"
+    elif args.domain == "text_to_sql_bird":
+        domain_data = loader.load_bird(max_samples=args.max_samples, use_local=True)
+        query_key = "prompt"
     elif args.domain == "math_reasoning":
         domain_data = loader.load_gsm8k(max_samples=args.max_samples)
         query_key = "question"
@@ -143,6 +146,8 @@ def main():
         # Use dataset directly
         if args.domain == "text_to_sql":
             examples = DataProcessor.from_spider(list(domain_data.train))
+        elif args.domain == "text_to_sql_bird":
+            examples = DataProcessor.from_bird(list(domain_data.train))
         elif args.domain == "math_reasoning":
             examples = DataProcessor.from_gsm8k(list(domain_data.train))
         elif args.domain == "code_generation":

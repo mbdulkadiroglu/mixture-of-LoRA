@@ -235,6 +235,50 @@ Provide clear and well-structured responses.""",
         return "\n".join(lines)
 
     @staticmethod
+    def from_bird(
+        data: list[dict],
+        include_schema: bool = True,
+    ) -> list[TrainingExample]:
+        """
+        Convert BIRD dataset entries to training examples.
+
+        BIRD examples have 'prompt' field with schema and evidence already included.
+
+        Args:
+            data: List of BIRD dataset entries.
+            include_schema: Whether to use the prompt with schema (vs raw question).
+
+        Returns:
+            List of TrainingExample objects.
+        """
+        examples = []
+
+        for entry in data:
+            question = entry.get("question", "")
+            sql = entry.get("SQL", entry.get("query", ""))
+            db_id = entry.get("db_id", "")
+
+            # Use pre-processed prompt (includes schema and evidence) if available
+            if include_schema and "prompt" in entry:
+                full_query = entry["prompt"]
+            else:
+                full_query = f"Convert this question to SQL: {question}"
+
+            # Format the SQL response
+            response = f"Based on the question, here's the SQL query:\n\n```sql\n{sql}\n```"
+
+            examples.append(
+                TrainingExample(
+                    query=full_query,
+                    response=response,
+                    domain="text_to_sql",
+                    metadata={"db_id": db_id, "source": "bird"},
+                )
+            )
+
+        return examples
+
+    @staticmethod
     def from_gsm8k(data: list[dict]) -> list[TrainingExample]:
         """
         Convert GSM8K dataset entries to training examples.
