@@ -11,7 +11,8 @@ from datasets import Dataset
 from loguru import logger
 from tqdm import tqdm
 
-from .sql_executor import SQLExecutor, get_spider_executor
+from .sql_executor import SQLExecutor, get_spider_executor, BIRDExecutor, get_bird_executor
+from .sql_cleaning import extract_sql_from_text
 
 
 @dataclass
@@ -37,12 +38,17 @@ class Evaluator:
     - BLEU score (for general text)
     """
 
-    def __init__(self, spider_db_dir: str | Path | None = None):
+    def __init__(
+        self,
+        spider_db_dir: str | Path | None = None,
+        bird_db_dir: str | Path | None = None,
+    ):
         """
         Initialize the evaluator.
 
         Args:
             spider_db_dir: Path to Spider database directory for execution-based eval.
+            bird_db_dir: Path to BIRD data directory for execution-based eval.
         """
         self._metrics: dict[str, Callable] = {
             "exact_match": self._exact_match,
@@ -51,7 +57,7 @@ class Evaluator:
             "code_execution": self._code_execution,
         }
 
-        # Initialize SQL executor if available
+        # Initialize Spider SQL executor if available
         self._sql_executor: SQLExecutor | None = None
         if spider_db_dir:
             try:
@@ -62,9 +68,22 @@ class Evaluator:
             # Try to auto-detect
             self._sql_executor = get_spider_executor()
 
-        if self._sql_executor:
-            logger.info("Evaluator initialized with SQL execution support")
+        # Initialize BIRD executor if available
+        self._bird_executor: BIRDExecutor | None = None
+        if bird_db_dir:
+            try:
+                self._bird_executor = BIRDExecutor(bird_db_dir)
+            except Exception as e:
+                logger.warning(f"Failed to initialize BIRD executor: {e}")
         else:
+            # Try to auto-detect
+            self._bird_executor = get_bird_executor()
+
+        if self._sql_executor:
+            logger.info("Evaluator initialized with Spider SQL execution support")
+        if self._bird_executor:
+            logger.info("Evaluator initialized with BIRD SQL execution support")
+        if not self._sql_executor and not self._bird_executor:
             logger.info("Evaluator initialized (SQL execution not available, using exact match)")
 
     def evaluate(
@@ -127,10 +146,10 @@ class Evaluator:
             details=details,
         )
 
-    # Domain-specific system prompts for evaluation
+    # Domain-specific system prompts for evaluation (must match training prompts)
     SYSTEM_PROMPTS = {
-        "text_to_sql": """You are an expert SQL assistant. Convert natural language queries to SQL.
-Think step by step, then provide the final SQL query in a code block.""",
+        "text_to_sql": """You are an expert SQL assistant. Given a database schema and a natural language question, output only the SQL query. Do not include any explanation, formatting, or markdown. Output only valid SQLite SQL.""",
+        "text_to_sql_bird": """You are an expert SQL assistant. Given a database schema and a natural language question, output only the SQL query. Do not include any explanation, formatting, or markdown. Output only valid SQLite SQL.""",
         "math_reasoning": """You are a mathematics tutor. Solve problems step by step.
 Show your work clearly and provide the final numerical answer.""",
         "code_generation": """You are an expert Python programmer.
@@ -179,8 +198,8 @@ Provide clear and well-structured responses.""",
         system_prompt = self.SYSTEM_PROMPTS.get(domain, self.SYSTEM_PROMPTS["general"])
 
         for example in tqdm(dataset, desc="Evaluating"):
-            # For text_to_sql, prefer 'prompt' field which includes schema context
-            if domain == "text_to_sql" and "prompt" in example:
+            # For text_to_sql domains, prefer 'prompt' field which includes schema context
+            if domain in ("text_to_sql", "text_to_sql_bird") and "prompt" in example:
                 query = example["prompt"]
             else:
                 query = example[query_key]
@@ -190,6 +209,10 @@ Provide clear and well-structured responses.""",
                 reference = example.get("query", example.get(reference_key, ""))
                 db_id = example.get("db_id", None)
                 db_ids.append(db_id)
+            elif domain == "text_to_sql_bird":
+                reference = example.get("SQL", example.get("query", example.get(reference_key, "")))
+                db_id = example.get("db_id", None)
+                db_ids.append(db_id)
             elif domain == "math_reasoning":
                 reference = example.get("answer", example.get(reference_key, ""))
             elif domain == "code_generation":
@@ -197,12 +220,19 @@ Provide clear and well-structured responses.""",
             else:
                 reference = example.get(reference_key, "")
 
-            # Generate prediction with system prompt for context
-            messages = [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": query},
-            ]
-            prediction = model.generate_chat(messages, temperature=0.1)
+            # BIRD uses user-only messages (rich prompt has all instructions inline,
+            # matching the 1-message training format from LoRA_SGD).
+            # Other domains use system + user messages.
+            if domain == "text_to_sql_bird":
+                messages = [{"role": "user", "content": query}]
+            else:
+                messages = [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": query},
+                ]
+            prediction = model.generate_chat(
+                messages, temperature=0.0, do_sample=False
+            )
 
             predictions.append(prediction)
             references.append(reference)
@@ -210,6 +240,8 @@ Provide clear and well-structured responses.""",
         # Use execution-based evaluation for SQL if available
         if domain == "text_to_sql" and use_execution and self._sql_executor and db_ids:
             return self.evaluate_sql_execution(predictions, references, db_ids)
+        if domain == "text_to_sql_bird" and use_execution and self._bird_executor and db_ids:
+            return self.evaluate_bird_sql_execution(predictions, references, db_ids)
 
         return self.evaluate(predictions, references, domain)
 
@@ -257,10 +289,55 @@ Provide clear and well-structured responses.""",
             },
         )
 
+    def evaluate_bird_sql_execution(
+        self,
+        predictions: list[str],
+        references: list[str],
+        db_ids: list[str],
+    ) -> EvaluationResult:
+        """
+        Evaluate BIRD SQL predictions using execution-based comparison.
+
+        Args:
+            predictions: List of predicted SQL queries.
+            references: List of reference SQL queries.
+            db_ids: List of database identifiers.
+
+        Returns:
+            EvaluationResult with execution accuracy.
+        """
+        if self._bird_executor is None:
+            logger.warning("BIRD executor not available, falling back to exact match")
+            return self.evaluate(predictions, references, "text_to_sql_bird")
+
+        logger.info(f"Evaluating {len(predictions)} BIRD SQL queries with execution...")
+
+        results = self._bird_executor.evaluate_batch(predictions, references, db_ids)
+
+        logger.info(
+            f"BIRD execution evaluation: {results['execution_accuracy']:.2%} "
+            f"({results['correct']}/{results['total']}), "
+            f"execution errors: {results['execution_errors']}"
+        )
+
+        return EvaluationResult(
+            domain="text_to_sql_bird",
+            metric_name="execution_accuracy",
+            score=results["execution_accuracy"],
+            num_samples=results["total"],
+            correct=results["correct"],
+            details={
+                "execution_errors": results["execution_errors"],
+                "execution_error_rate": results["execution_error_rate"],
+                "sample_details": results["details"],
+            },
+        )
+
     def _get_default_metric(self, domain: str) -> str:
         """Get default metric for a domain."""
         domain_metrics = {
             "text_to_sql": "sql_exact_match",
+            "text_to_sql_bird": "sql_exact_match",
             "math_reasoning": "math_answer_match",
             "code_generation": "code_execution",
             "general": "exact_match",
@@ -295,21 +372,12 @@ Provide clear and well-structured responses.""",
         return pred_norm == ref_norm
 
     def _extract_sql(self, text: str) -> str:
-        """Extract SQL from text, handling code blocks."""
-        # Try to extract from code block
-        sql_block_pattern = r"```(?:sql)?\s*(.*?)```"
-        matches = re.findall(sql_block_pattern, text, re.DOTALL | re.IGNORECASE)
-        if matches:
-            return matches[-1].strip()
+        """Extract SQL from text, handling code blocks.
 
-        # Try to find SQL-like content
-        # Look for SELECT, INSERT, UPDATE, DELETE statements
-        sql_pattern = r"(SELECT|INSERT|UPDATE|DELETE|CREATE|DROP|ALTER)\s+.*"
-        match = re.search(sql_pattern, text, re.IGNORECASE | re.DOTALL)
-        if match:
-            return match.group(0).strip()
-
-        return text.strip()
+        Aggressively cuts at the first semicolon and removes trailing
+        explanation markers to prevent garbage after the SQL.
+        """
+        return extract_sql_from_text(text)
 
     def _normalize_sql(self, sql: str) -> str:
         """Normalize SQL for comparison."""
@@ -471,6 +539,7 @@ class DomainEvaluator:
             True if results match.
         """
         import sqlite3
+        from collections import Counter
 
         try:
             conn = sqlite3.connect(db_path)
@@ -478,15 +547,17 @@ class DomainEvaluator:
 
             # Execute reference query
             cursor.execute(reference)
-            ref_result = set(cursor.fetchall())
+            ref_result = cursor.fetchall()
 
             # Execute prediction
             cursor.execute(prediction)
-            pred_result = set(cursor.fetchall())
+            pred_result = cursor.fetchall()
 
             conn.close()
 
-            return pred_result == ref_result
+            pred_bag = Counter(tuple(str(v) for v in row) for row in pred_result)
+            ref_bag = Counter(tuple(str(v) for v in row) for row in ref_result)
+            return pred_bag == ref_bag
 
         except Exception as e:
             logger.warning(f"SQL execution failed: {e}")

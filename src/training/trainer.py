@@ -70,6 +70,84 @@ class LoRATrainer:
 
         logger.info(f"Model prepared for training domain: {domain}")
 
+    def _tokenize_no_special(self, text: str) -> list[int]:
+        """Tokenize text without injecting tokenizer-added special tokens."""
+        try:
+            tokenized = self.student.tokenizer(
+                text,
+                truncation=False,
+                add_special_tokens=False,
+            )
+        except TypeError:
+            tokenized = self.student.tokenizer(text, truncation=False)
+
+        input_ids = tokenized.get("input_ids", [])
+        if input_ids and isinstance(input_ids[0], list):
+            input_ids = input_ids[0]
+        return input_ids
+
+    def _ensure_tokenized_completion_dataset(self, dataset: Dataset) -> Dataset:
+        """
+        Ensure dataset contains explicit completion masks for completion-only loss.
+
+        Preferred raw format is prompt/completion; this method converts it into
+        pretokenized rows with ``input_ids`` + ``completion_mask`` so the trainer
+        only backpropagates on assistant/completion tokens.
+        """
+        column_names = set(dataset.column_names)
+
+        if "prompt" in column_names and "completion" in column_names:
+            rows = []
+            skipped = 0
+            max_seq_len = self.student.config.max_seq_length
+
+            for ex in dataset:
+                prompt = ex.get("prompt", "")
+                completion = ex.get("completion", "")
+
+                if not completion:
+                    skipped += 1
+                    continue
+
+                prompt_ids = self._tokenize_no_special(prompt)
+                completion_ids = self._tokenize_no_special(completion)
+                if len(completion_ids) == 0:
+                    skipped += 1
+                    continue
+
+                input_ids = prompt_ids + completion_ids
+                if len(input_ids) > max_seq_len:
+                    skipped += 1
+                    continue
+
+                completion_mask = [0] * len(prompt_ids) + [1] * len(completion_ids)
+
+                row = dict(ex)
+                row["input_ids"] = input_ids
+                row["attention_mask"] = [1] * len(input_ids)
+                row["completion_mask"] = completion_mask
+                rows.append(row)
+
+            if not rows:
+                raise ValueError(
+                    "No valid prompt/completion rows available after tokenization."
+                )
+
+            if skipped > 0:
+                logger.warning(
+                    f"Skipped {skipped} examples while building completion-only dataset."
+                )
+
+            return Dataset.from_list(rows)
+
+        if {"input_ids", "completion_mask"}.issubset(column_names):
+            return dataset
+
+        raise ValueError(
+            "Training dataset must contain either prompt/completion columns "
+            "or pretokenized input_ids/completion_mask columns."
+        )
+
     def train(
         self,
         dataset: Dataset,
@@ -82,7 +160,7 @@ class LoRATrainer:
         Train the model on a dataset.
 
         Args:
-            dataset: Training dataset with 'text' column.
+            dataset: Training dataset with prompt/completion or tokenized fields.
             domain: Domain being trained.
             num_epochs: Number of epochs (overrides config).
             max_steps: Maximum steps (overrides config).
@@ -96,6 +174,9 @@ class LoRATrainer:
         # Mix with replay buffer for continual learning
         if len(self.replay_buffer) > 0 and self.training_config.replay_ratio > 0:
             dataset = self._mix_with_replay(dataset, domain)
+
+        # Build pretokenized completion masks so loss is computed only on completion tokens.
+        dataset = self._ensure_tokenized_completion_dataset(dataset)
 
         # Create output directory for this training run
         run_dir = self.output_dir / f"{domain}_{get_timestamp()}"
@@ -120,6 +201,9 @@ class LoRATrainer:
             save_steps=self.training_config.save_steps,
             save_total_limit=self.training_config.save_total_limit,
             max_seq_length=self.student.config.max_seq_length,
+            completion_only_loss=True,
+            dataset_kwargs={"skip_prepare_dataset": True},
+            remove_unused_columns=False,
             seed=42,
             report_to="none",  # Disable wandb by default
         )
@@ -183,7 +267,11 @@ class LoRATrainer:
         """
         # Add to replay buffer
         for ex in examples:
-            self.replay_buffer.add({"text": ex["text"], "domain": domain})
+            self.replay_buffer.add({
+                "prompt": ex.get("prompt", ""),
+                "completion": ex.get("completion", ""),
+                "domain": domain,
+            })
 
         # Check if we have enough examples
         domain_examples = [

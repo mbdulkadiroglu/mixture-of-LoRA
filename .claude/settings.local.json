@@ -1,10 +1,39 @@
 {
   "permissions": {
     "allow": [
-      "Bash(wc:*)",
-      "Bash(conda info:*)",
+      "WebSearch",
+      "Bash(source:*)",
+      "Bash(ruff check:*)",
+      "Bash(pip show:*)",
+      "Bash(CUDA_VISIBLE_DEVICES=1 /home/mehmet/miniconda3/envs/mixture-lora/bin/python:*)",
+      "Bash(tee:*)",
+      "Bash(nvidia-smi:*)",
+      "Bash(CUDA_VISIBLE_DEVICES=0 /home/mehmet/miniconda3/envs/mixture-lora/bin/python:*)",
+      "Bash(claude:*)",
+      "Bash(python3:*)",
+      "Bash(ls:*)",
+      "Bash(pip install:*)",
+      "Bash(pytest:*)",
+      "Bash(tmux new-session:*)",
       "Bash(tmux capture-pane:*)",
-      "Bash(xxd:*)"
+      "Bash(python:*)",
+      "Bash(tmux kill-session:*)",
+      "Bash(CUDA_VISIBLE_DEVICES=2 python:*)",
+      "WebFetch(domain:arxiv.org)",
+      "WebFetch(domain:github.com)",
+      "Bash(cat:*)",
+      "Bash(source ~/miniconda3/bin/activate mixture-lora && CUDA_VISIBLE_DEVICES=2,3 python -m cascade.phase0.verify 2>&1)",
+      "Bash(tail:*)",
+      "Bash(ollama:*)",
+      "Bash(curl:*)",
+      "Bash(sqlite3:*)",
+      "Bash(tar xzf:*)",
+      "Bash(bash:*)",
+      "Bash(/home/mehmet/.local/bin/prince:*)",
+      "Bash(do echo:*)",
+      "Bash(do:*)",
+      "Bash(echo:*)",
+      "Bash(tmux ls:*)"
     ]
   }
 }

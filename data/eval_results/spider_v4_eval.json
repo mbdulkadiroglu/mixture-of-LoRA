@@ -1,0 +1,17 @@
+{
+  "adapter_name": "text_to_sql_v4",
+  "adapter_path": "/data/mehmet/projects/mixture-of-LoRA/data/lora_adapters/text_to_sql/text_to_sql_v4",
+  "adapter_version": 4,
+  "domain": "text_to_sql",
+  "score": 0.648936170212766,
+  "correct": 671,
+  "total": 1034,
+  "gpu": "GPU 2",
+  "status": "completed",
+  "started_at": "2026-02-18T22:29:19.425391",
+  "finished_at": "2026-02-18T22:48:53.811071",
+  "details": {
+    "metric": "execution_accuracy",
+    "base_model_score": 0.7234
+  }
+}

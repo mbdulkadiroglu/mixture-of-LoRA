@@ -4,19 +4,27 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-An adaptive teacher-student framework for fine-tuning a small language model (Qwen 2.5 14B) using domain-specific LoRA adapters, with GPT-5 mini as the teacher model. The system includes:
+An adaptive teacher-student framework where a large model (GPT-5 mini) improves a small model (Qwen 2.5 14B + LoRA) through online distillation. The core thesis: **when the router sends a query to the big model, use that response to train the small model.** Over time, the student improves, the router sends fewer queries to the teacher, and inference cost drops.
+
+The system is **domain-agnostic by design**. Text-to-SQL (Spider, BIRD) is the current test domain because it has convenient evaluation infrastructure, but the framework applies to any task where a larger model outperforms a smaller one.
+
 - A **Router** that decides whether the student or teacher handles each query
 - A **Student Model** (Qwen 2.5 14B + LoRA) for domain-specific tasks
 - A **Teacher Model** (GPT-5 mini) for complex queries and training data generation
 - **Online Learning** to continuously improve the student from teacher responses
 
-Supported domains: `text_to_sql` (Spider dataset), `math_reasoning` (GSM8K), `code_generation` (MBPP).
+Test domains: `text_to_sql` (Spider + BIRD), `math_reasoning` (GSM8K), `code_generation` (MBPP).
+
+**Hardware**: Requires 4x NVIDIA RTX 6000 Ada GPUs (~196GB VRAM), CUDA 12.0+, Python 3.10+.
 
 ## Common Commands
 
 ```bash
 # Activate environment
 source ~/miniconda3/bin/activate mixture-lora
+
+# Install (with dev tools)
+pip install -e ".[dev]"
 
 # Train a domain adapter
 python main.py train --domain text_to_sql --max-samples 1000 --eval
@@ -38,61 +46,69 @@ python main.py demo
 
 # Show framework info
 python main.py info
+
+# Lint and format
+ruff check src/ scripts/ main.py
+black src/ scripts/ main.py
 ```
 
 ## Architecture
 
-### Core Components (src/)
-
-- **framework.py**: `AdaptiveSLMFramework` - Main orchestrator that coordinates routing, generation, training, and evaluation. Entry point for programmatic usage.
-
-- **models/student.py**: `StudentModel` - Wraps Qwen 2.5 14B using Unsloth for 4-bit quantization and efficient inference. Handles LoRA adapter loading/saving and generation.
-
-- **models/teacher.py**: `TeacherModel` - OpenAI API client for GPT-5 mini. Used for generating training data and evaluating student responses.
-
-- **router/router.py**: `QueryRouter` - Routes queries between student/teacher based on confidence. Supports three strategies:
-  - `perplexity`: Uses model perplexity on the query
-  - `self_eval`: Asks teacher to evaluate query difficulty
-  - `stats`: Uses historical success rates per domain
-
-- **training/trainer.py**: `LoRATrainer` - SFT training using TRL's SFTTrainer. Supports experience replay for continual learning.
-
-- **adapters/manager.py**: `AdapterManager` - Manages LoRA adapter versioning, storage, and registry at `data/lora_adapters/`.
-
-- **evaluation/evaluator.py**: `Evaluator` - Domain-specific evaluation with execution-based SQL accuracy (against Spider databases) and math answer extraction.
-
 ### Data Flow
 
-1. Query enters `AdaptiveSLMFramework.process_query()`
-2. Router checks adapter availability and confidence
-3. If routed to student: load domain LoRA adapter, generate response
-4. If routed to teacher: call GPT-5 mini API
-5. Teacher responses are collected for future training
-6. `train_domain()` fine-tunes LoRA adapter on collected examples
+1. Query enters `AdaptiveSLMFramework.process_query()` (src/framework.py)
+2. Domain is classified (keyword/regex-based, not ML) or passed explicitly
+3. Router checks adapter availability and applies routing strategy (perplexity/self_eval/stats)
+4. If confidence >= threshold (0.7): student loads domain LoRA adapter, generates response
+5. If confidence < threshold or student fails: falls back to teacher (GPT-5 mini API)
+6. **Teacher responses are collected as training data** — this is the core learning signal. The student learns from the teacher, not from ground truth labels. (Ground truth training was only used to validate that LoRA fine-tuning works at all.)
+7. `train_domain()` fine-tunes LoRA adapter via SFTTrainer, mixing new data with replay buffer (20% ratio)
 
-### Key Configuration
+### Key Modules
 
-Edit `configs/config.yaml` for:
-- LoRA parameters: r=32, alpha=32, dropout=0.0
-- Training: batch_size=4, grad_accum=4, lr=2e-4, epochs=3
-- Router threshold: 0.7 confidence for student routing
-- Adapter storage: `data/lora_adapters/`
+- **src/framework.py** - `AdaptiveSLMFramework`: Main orchestrator. Entry point for all operations (query processing, training, evaluation). Coordinates all other components.
+- **src/config.py** - Typed dataclasses for all configuration. `load_config()` loads YAML then overrides with env vars (env vars take precedence).
+- **src/models/student.py** - `StudentModel`: Qwen 2.5 14B via Unsloth `FastLanguageModel` (4-bit quantization, bfloat16). Handles dynamic LoRA adapter loading/unloading.
+- **src/models/teacher.py** - `TeacherModel`: Uses OpenAI **Responses API** (`client.responses.create()`), not the Chat Completions API.
+- **src/training/data_processor.py** - `DataProcessor`: Converts raw dataset samples (Spider/BIRD/GSM8K/MBPP) into chat-templated training text. Domain-specific system prompts are defined here.
+- **src/training/trainer.py** - `LoRATrainer`: SFT training with experience replay buffer to prevent catastrophic forgetting.
+- **src/datasets/loader.py** - `DatasetLoader`: Auto-detects local data dirs (`spider_data/`, `bird_data/`), falls back to HuggingFace. Loads database schemas for text-to-sql.
+- **src/evaluation/sql_executor.py** - Executes SQL against actual SQLite databases (Spider/BIRD) for execution accuracy evaluation. Note: this is a domain-specific evaluator for the text-to-SQL test domain, not a core part of the framework.
+- **src/adapters/manager.py** - `AdapterManager`: Versioned adapter storage with registry (`data/lora_adapters/registry.json`), symlinked `latest/` directories.
 
-Environment variables in `.env`:
-- `OPENAI_API_KEY`: For GPT-5 mini teacher
-- `HF_TOKEN`: For Hugging Face model access
+### Adapter Storage Layout
+
+```
+data/lora_adapters/
+├── {domain}/{domain}_v{N}/    # Versioned adapters (PEFT weights + tokenizer)
+├── {domain}/latest/           # Symlink to best version
+├── training_runs/             # Timestamped checkpoint directories
+└── registry.json              # Metadata: scores, versions, paths
+```
+
+### Configuration Precedence
+
+1. Dataclass defaults in `src/config.py`
+2. `configs/config.yaml` overrides
+3. `.env` environment variables override (for `OPENAI_API_KEY`, `HF_TOKEN`, `TEACHER_MODEL`, `STUDENT_MODEL`, `LORA_ADAPTERS_PATH`, `ROUTER_CONFIDENCE_THRESHOLD`, `CUDA_VISIBLE_DEVICES`)
+
+## GPU Allocation
+
+There are 4 available GPUs (0, 1, 2, 3). You may use any of them if they are available. Note that `.env` values can override command-line environment variables if loaded with `override=True`; use each script's `--gpu` flag (or set `CUDA_VISIBLE_DEVICES`) after `.env` loads when you need to select a specific GPU.
 
 ## Code Conventions
 
-- Import `unsloth` before PyTorch/transformers (enables optimizations)
-- Load `.env` before PyTorch initializes (GPU allocation)
+- **Critical import order**: `unsloth` must be imported before PyTorch/transformers (enables kernel optimizations). `.env` must be loaded before PyTorch initializes (controls `CUDA_VISIBLE_DEVICES` for GPU allocation). See `main.py` for the correct pattern.
 - Use `loguru` for logging, not stdlib logging
 - Type hints with Python 3.10+ union syntax (`str | None`)
-- Dataclasses for structured return types (`QueryResult`, `EvaluationResult`, etc.)
+- Dataclasses for structured return types (`QueryResult`, `EvaluationResult`, `TrainingExample`, `AdapterInfo`, `RoutingDecision`)
+- `pathlib.Path` for file paths
 
 ## Current Status
 
 LoRA v3 trained on Spider text_to_sql achieves 74.18% accuracy (+5.13% over base model). Adapters stored at `data/lora_adapters/text_to_sql/text_to_sql_v3/`.
+
+Active work on `feature/bird-training` branch: BIRD dataset infrastructure is complete, training blocked on corrupted `train.zip` (can use dev set with 1534 samples). See `tasks/todo.md`.
 
 ## Workflow Guidelines
 
@@ -116,6 +132,13 @@ LoRA v3 trained on Spider text_to_sql achieves 74.18% accuracy (+5.13% over base
 - After ANY correction from user: update `tasks/lessons.md` with the pattern
 - Write rules that prevent the same mistake
 - Review lessons at session start
+
+### Evaluation
+- **Always use the full test set** for evaluations unless the user explicitly requests a smaller sample size. Never default to `max_samples=100` or any other subset — pass `None` (or omit) so the entire test split is used.
+
+### Long-Running Processes
+- **Always use tmux** for any process that isn't instant (training, evaluation, experiments, etc.). Never run long processes as background shell tasks — they die if the session ends.
+- Use `tmux new-session -d -s <name> "<command>"` to start, `tmux capture-pane -t <name> -p` to check output.
 
 ### Core Principles
 - **No Laziness**: Find root causes. No temporary fixes. Senior developer standards.

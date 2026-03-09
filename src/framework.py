@@ -150,7 +150,8 @@ class AdaptiveSLMFramework:
 
         # Initialize evaluator with SQL execution support
         spider_db_dir = self.config.evaluation.spider_db_dir
-        self.evaluator = Evaluator(spider_db_dir=spider_db_dir)
+        bird_db_dir = self.config.evaluation.bird_db_dir
+        self.evaluator = Evaluator(spider_db_dir=spider_db_dir, bird_db_dir=bird_db_dir)
 
         self._initialized = True
         logger.info("Framework initialization complete")
@@ -206,9 +207,9 @@ class AdaptiveSLMFramework:
         if collect_training_data and used_teacher:
             self._collect_training_example(query, response, domain)
 
-        # Update routing statistics
-        # Note: In a real system, you'd verify success through evaluation
-        self.router.update_stats(domain, success=True, student_used=not used_teacher)
+        # Router stats are NOT updated here — we have no ground truth to verify
+        # correctness. Stats should only be updated when SQL execution results
+        # are available (wired in a later step).
 
         return QueryResult(
             query=query,
@@ -219,10 +220,10 @@ class AdaptiveSLMFramework:
             confidence=routing.confidence,
         )
 
-    # Domain-specific system prompts
+    # Domain-specific system prompts (must match training prompts in DataProcessor)
     SYSTEM_PROMPTS = {
-        "text_to_sql": """You are an expert SQL assistant. Convert natural language queries to SQL.
-Think step by step, then provide the final SQL query in a code block.""",
+        "text_to_sql": """You are an expert SQL assistant. Given a database schema and a natural language question, output only the SQL query. Do not include any explanation, formatting, or markdown. Output only valid SQLite SQL.""",
+        "text_to_sql_bird": """You are an expert SQL assistant. Given a database schema and a natural language question, output only the SQL query. Do not include any explanation, formatting, or markdown. Output only valid SQLite SQL.""",
         "math_reasoning": """You are a mathematics tutor. Solve problems step by step.
 Show your work clearly and provide the final numerical answer.""",
         "code_generation": """You are an expert Python programmer.
@@ -370,6 +371,7 @@ Provide clear and well-structured responses.""",
         domain: str,
         test_dataset=None,
         max_samples: int | None = None,
+        adapter_path: str | None = None,
     ) -> EvaluationResult:
         """
         Evaluate the student model on a domain.
@@ -378,6 +380,7 @@ Provide clear and well-structured responses.""",
             domain: Domain to evaluate.
             test_dataset: Test dataset (loaded automatically if None).
             max_samples: Maximum samples to evaluate.
+            adapter_path: Explicit adapter path to evaluate (uses best if None).
 
         Returns:
             EvaluationResult with metrics.
@@ -386,6 +389,8 @@ Provide clear and well-structured responses.""",
             loader = DatasetLoader()
             if domain == "text_to_sql":
                 domain_data = loader.load_spider(max_samples=max_samples)
+            elif domain == "text_to_sql_bird":
+                domain_data = loader.load_bird(max_samples=max_samples)
             elif domain == "math_reasoning":
                 domain_data = loader.load_gsm8k(max_samples=max_samples)
             elif domain == "code_generation":
@@ -394,17 +399,20 @@ Provide clear and well-structured responses.""",
                 raise ValueError(f"Unknown domain: {domain}")
             test_dataset = domain_data.test
 
-        # Load adapter
-        adapter_path = self.adapter_manager.get_adapter_path(domain)
+        # Load adapter — use explicit path if provided, otherwise best
+        if adapter_path is None:
+            adapter_path = self.adapter_manager.get_adapter_path(domain)
         if adapter_path:
             self.student.load_adapter(adapter_path)
         else:
-            logger.warning(f"No adapter found for domain: {domain}")
+            raise ValueError(f"No adapter found for domain: {domain}")
 
         # Determine keys based on domain
         # For text_to_sql, use 'prompt' which includes schema context
         if domain == "text_to_sql":
             query_key, ref_key = "prompt", "query"
+        elif domain == "text_to_sql_bird":
+            query_key, ref_key = "prompt", "SQL"
         elif domain == "math_reasoning":
             query_key, ref_key = "question", "answer"
         elif domain == "code_generation":
@@ -419,12 +427,12 @@ Provide clear and well-structured responses.""",
             domain,
             query_key=query_key,
             reference_key=ref_key,
-            max_samples=max_samples or self.config.evaluation.quick_eval_samples,
+            max_samples=max_samples,
         )
 
-        # Update adapter score
+        # Update adapter score — find adapter matching the path we evaluated
         if adapter_path:
-            adapter = self.adapter_manager.get_adapter(domain)
+            adapter = self.adapter_manager.get_adapter_by_path(domain, adapter_path)
             if adapter:
                 self.adapter_manager.update_adapter_score(
                     domain, adapter.version, result.score

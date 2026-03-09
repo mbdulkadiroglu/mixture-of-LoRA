@@ -51,27 +51,62 @@ class TeacherModel:
         }
         return model_mapping.get(name, name)
 
-    def _format_input(self, messages: list[dict]) -> str:
+    @staticmethod
+    def _normalize_content(content: object) -> str:
+        """Normalize message content into plain text."""
+        if isinstance(content, str):
+            return content
+
+        if isinstance(content, list):
+            parts = []
+            for item in content:
+                if isinstance(item, dict):
+                    if isinstance(item.get("text"), str):
+                        parts.append(item["text"])
+                    elif isinstance(item.get("content"), str):
+                        parts.append(item["content"])
+                    elif isinstance(item.get("value"), str):
+                        parts.append(item["value"])
+                else:
+                    parts.append(str(item))
+            return "\n".join(parts)
+
+        return str(content)
+
+    def _build_request_payload(self, messages: list[dict]) -> dict:
         """
-        Format messages list into a single input string for the responses API.
+        Build a structured payload for the responses API.
 
         Args:
             messages: List of message dictionaries with 'role' and 'content'.
 
         Returns:
-            Formatted input string.
+            Payload dict with `input` and optional `instructions`.
         """
-        parts = []
+        instructions = []
+        inputs = []
+
         for msg in messages:
             role = msg.get("role", "user")
-            content = msg.get("content", "")
+            content = self._normalize_content(msg.get("content", ""))
+
             if role == "system":
-                parts.append(f"System: {content}")
-            elif role == "assistant":
-                parts.append(f"Assistant: {content}")
-            else:
-                parts.append(content)
-        return "\n\n".join(parts)
+                if content:
+                    instructions.append(content)
+                continue
+
+            if role not in {"user", "assistant"}:
+                role = "user"
+
+            inputs.append({"role": role, "content": content})
+
+        payload = {
+            "input": inputs if inputs else [{"role": "user", "content": ""}],
+        }
+        if instructions:
+            payload["instructions"] = "\n\n".join(instructions)
+
+        return payload
 
     def generate(
         self,
@@ -93,10 +128,10 @@ class TeacherModel:
             Generated response text.
         """
         try:
-            input_text = self._format_input(messages)
+            payload = self._build_request_payload(messages)
             response = self.client.responses.create(
                 model=self.model_name,
-                input=input_text,
+                **payload,
             )
             return response.output_text
 
@@ -124,10 +159,10 @@ class TeacherModel:
             Generated response text.
         """
         try:
-            input_text = self._format_input(messages)
+            payload = self._build_request_payload(messages)
             response = await self.async_client.responses.create(
                 model=self.model_name,
-                input=input_text,
+                **payload,
             )
             return response.output_text
 
@@ -153,10 +188,10 @@ class TeacherModel:
             Response text chunks.
         """
         try:
-            input_text = self._format_input(messages)
+            payload = self._build_request_payload(messages)
             stream = await self.async_client.responses.create(
                 model=self.model_name,
-                input=input_text,
+                **payload,
                 stream=True,
             )
 

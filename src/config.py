@@ -24,9 +24,9 @@ class TeacherModelConfig:
 
 @dataclass
 class StudentModelConfig:
-    """Configuration for the student model (Qwen 2.5 14B)."""
+    """Configuration for the student model."""
 
-    name: str = "Qwen/Qwen2.5-14B-Instruct"
+    name: str = "unsloth/Qwen2.5-14B-Instruct"
     max_seq_length: int = 4096
     load_in_4bit: bool = True
     dtype: str = "bfloat16"
@@ -115,6 +115,7 @@ class EvaluationConfig:
         ]
     )
     spider_db_dir: str | None = None  # Path to Spider database for SQL execution eval
+    bird_db_dir: str | None = None  # Path to BIRD data directory for SQL execution eval
 
 
 @dataclass

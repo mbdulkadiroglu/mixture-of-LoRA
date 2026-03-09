@@ -81,7 +81,7 @@ Think step by step, then provide the final SQL query in a code block."""
             {"role": "user", "content": query},
         ]
 
-        output = framework.student.generate_chat(messages, temperature=0.1)
+        output = framework.student.generate_chat(messages, temperature=0.0, do_sample=False)
         extracted_sql = evaluator._extract_sql(output)
 
         # Check execution

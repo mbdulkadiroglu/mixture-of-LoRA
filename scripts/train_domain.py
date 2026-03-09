@@ -8,6 +8,7 @@ Usage:
     python scripts/train_domain.py --domain code_generation --use-teacher-data
 """
 
+import os
 import sys
 from pathlib import Path
 
@@ -18,10 +19,16 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from dotenv import load_dotenv
 load_dotenv(Path(__file__).parent.parent / ".env", override=True)
 
+# Override GPU AFTER .env load
+import argparse
+_pre_parser = argparse.ArgumentParser(add_help=False)
+_pre_parser.add_argument("--gpu", type=str, default=None)
+_pre_args, _ = _pre_parser.parse_known_args()
+if _pre_args.gpu is not None:
+    os.environ["CUDA_VISIBLE_DEVICES"] = _pre_args.gpu
+
 # Import unsloth BEFORE other ML libraries for optimizations
 import unsloth  # noqa: F401
-
-import argparse
 
 from src.config import load_config
 from src.datasets import DatasetLoader
@@ -73,6 +80,12 @@ def parse_args():
         action="store_true",
         help="Run evaluation after training",
     )
+    parser.add_argument(
+        "--gpu",
+        type=str,
+        default=None,
+        help="GPU index to use (overrides .env CUDA_VISIBLE_DEVICES)",
+    )
 
     return parser.parse_args()
 
@@ -102,7 +115,7 @@ def main():
         # Use 'prompt' which includes schema context, not raw 'question'
         query_key = "prompt"
     elif args.domain == "text_to_sql_bird":
-        domain_data = loader.load_bird(max_samples=args.max_samples, use_local=True)
+        domain_data = loader.load_bird(max_samples=args.max_samples)
         query_key = "prompt"
     elif args.domain == "math_reasoning":
         domain_data = loader.load_gsm8k(max_samples=args.max_samples)
@@ -177,6 +190,7 @@ def main():
             args.domain,
             test_dataset=domain_data.test,
             max_samples=100,
+            adapter_path=result['adapter_info'].path,
         )
         print(f"  Score: {eval_result.score:.2%}")
         print(f"  Correct: {eval_result.correct}/{eval_result.num_samples}")

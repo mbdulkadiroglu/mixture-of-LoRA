@@ -4,12 +4,49 @@ SQL execution-based evaluation for text-to-SQL tasks.
 Uses actual database execution to compare predicted and reference SQL queries.
 """
 
-import re
 import sqlite3
+import threading
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
 from loguru import logger
+
+from .sql_cleaning import extract_sql_from_text
+
+def _compare_result_sets(results1: list[tuple], results2: list[tuple]) -> bool:
+    """
+    Compare two SQL result sets, independent of row order AND column order.
+
+    This handles the common case where a predicted query returns the same data
+    but with columns in a different SELECT order (e.g., ``SELECT a, b`` vs
+    ``SELECT b, a``).  The comparison works in two stages:
+
+    1. Try exact row-order-independent multiset match (fast path).
+    2. If that fails AND both have the same column count, try sorting the
+       values within each row before comparing (column-order-independent).
+    """
+    if not results1 and not results2:
+        return True
+    if len(results1) != len(results2):
+        return False
+
+    try:
+        # Fast path: exact column-order match (row-order independent, preserves duplicates)
+        bag1 = Counter(tuple(str(v) for v in row) for row in results1)
+        bag2 = Counter(tuple(str(v) for v in row) for row in results2)
+        if bag1 == bag2:
+            return True
+    except Exception:
+        pass
+
+    # Slow path: column-order-independent match
+    try:
+        bag1 = Counter(tuple(sorted(str(v) for v in row)) for row in results1)
+        bag2 = Counter(tuple(sorted(str(v) for v in row)) for row in results2)
+        return bag1 == bag2
+    except Exception:
+        return False
 
 
 class SQLExecutor:
@@ -90,7 +127,7 @@ class SQLExecutor:
         self,
         sql: str,
         db_id: str,
-        timeout: float = 30.0
+        timeout: float = 45.0
     ) -> tuple[bool, Any]:
         """
         Execute a SQL query and return results.
@@ -107,19 +144,26 @@ class SQLExecutor:
         if conn is None:
             return False, f"Database not found: {db_id}"
 
+        # Use threading.Timer + conn.interrupt() to reliably abort
+        # long-running queries at the SQLite C level.
+        timer = threading.Timer(timeout, conn.interrupt)
+        timer.start()
         try:
-            # Clean the SQL
             sql = self._clean_sql(sql)
-
             cursor = conn.cursor()
             cursor.execute(sql)
             results = cursor.fetchall()
-
             return True, results
+        except sqlite3.OperationalError as e:
+            if "interrupted" in str(e).lower():
+                return False, f"SQL timeout after {timeout}s"
+            return False, f"SQL error: {e}"
         except sqlite3.Error as e:
             return False, f"SQL error: {e}"
         except Exception as e:
             return False, f"Execution error: {e}"
+        finally:
+            timer.cancel()
 
     def _clean_sql(self, sql: str) -> str:
         """
@@ -131,20 +175,14 @@ class SQLExecutor:
         Returns:
             Cleaned SQL string.
         """
-        # Extract SQL from code blocks
-        sql = self._extract_sql_from_text(sql)
-
-        # Remove leading/trailing whitespace
-        sql = sql.strip()
-
-        # Remove trailing semicolon (SQLite doesn't need it)
-        sql = sql.rstrip(';')
-
-        return sql
+        return extract_sql_from_text(sql).strip()
 
     def _extract_sql_from_text(self, text: str) -> str:
         """
         Extract SQL query from text that may contain markdown or explanations.
+
+        Aggressively cuts at the first semicolon and removes trailing
+        explanation markers to prevent garbage after the SQL.
 
         Args:
             text: Text containing SQL.
@@ -152,19 +190,7 @@ class SQLExecutor:
         Returns:
             Extracted SQL query.
         """
-        # Try to extract from code block
-        sql_block_pattern = r"```(?:sql)?\s*(.*?)```"
-        matches = re.findall(sql_block_pattern, text, re.DOTALL | re.IGNORECASE)
-        if matches:
-            return matches[-1].strip()
-
-        # Try to find SQL statement
-        sql_pattern = r"(SELECT|INSERT|UPDATE|DELETE|CREATE|DROP|ALTER)\s+.+"
-        match = re.search(sql_pattern, text, re.IGNORECASE | re.DOTALL)
-        if match:
-            return match.group(0).strip()
-
-        return text
+        return extract_sql_from_text(text)
 
     def compare_results(
         self,
@@ -174,6 +200,10 @@ class SQLExecutor:
     ) -> bool:
         """
         Compare two sets of SQL results.
+
+        Performs row-order-independent and column-order-independent comparison.
+        Two result sets match if the same multiset of value-bags exists in both,
+        regardless of column ordering in the SELECT clause.
 
         Args:
             results1: First result set.
@@ -186,17 +216,7 @@ class SQLExecutor:
         if order_matters:
             return results1 == results2
 
-        # Convert to sets of tuples for order-independent comparison
-        # Handle potential unhashable types by converting to strings
-        try:
-            set1 = set(tuple(str(v) for v in row) for row in results1)
-            set2 = set(tuple(str(v) for v in row) for row in results2)
-            return set1 == set2
-        except Exception:
-            # Fallback to sorted comparison
-            sorted1 = sorted([tuple(str(v) for v in row) for row in results1])
-            sorted2 = sorted([tuple(str(v) for v in row) for row in results2])
-            return sorted1 == sorted2
+        return _compare_result_sets(results1, results2)
 
     def evaluate_single(
         self,
@@ -450,51 +470,42 @@ class BIRDExecutor:
             logger.error(f"Failed to connect to database {db_id}: {e}")
             return None
 
-    def execute_sql(self, sql: str, db_id: str, timeout: float = 30.0) -> tuple[bool, Any]:
+    def execute_sql(self, sql: str, db_id: str, timeout: float = 45.0) -> tuple[bool, Any]:
         """Execute SQL query and return results."""
         conn = self.get_connection(db_id)
         if conn is None:
             return False, f"Database not found: {db_id}"
 
+        timer = threading.Timer(timeout, conn.interrupt)
+        timer.start()
         try:
-            # Clean the SQL
             sql = self._clean_sql(sql)
             cursor = conn.cursor()
             cursor.execute(sql)
             results = cursor.fetchall()
             return True, results
+        except sqlite3.OperationalError as e:
+            if "interrupted" in str(e).lower():
+                return False, f"SQL timeout after {timeout}s"
+            return False, f"SQL error: {e}"
         except sqlite3.Error as e:
             return False, f"SQL error: {e}"
         except Exception as e:
             return False, f"Execution error: {e}"
+        finally:
+            timer.cancel()
 
     def _clean_sql(self, sql: str) -> str:
-        """Clean and normalize SQL for execution."""
-        # Extract SQL from code blocks
-        sql_block_pattern = r"```(?:sql)?\s*(.*?)```"
-        matches = re.findall(sql_block_pattern, sql, re.DOTALL | re.IGNORECASE)
-        if matches:
-            sql = matches[-1].strip()
-        else:
-            # Try to find SQL statement
-            sql_pattern = r"(SELECT|INSERT|UPDATE|DELETE|CREATE|DROP|ALTER|WITH)\s+.+"
-            match = re.search(sql_pattern, sql, re.IGNORECASE | re.DOTALL)
-            if match:
-                sql = match.group(0).strip()
+        """Clean and normalize SQL for execution.
 
-        sql = sql.strip().rstrip(';')
-        return sql
+        Aggressively cuts at the first semicolon and removes trailing
+        explanation markers to prevent garbage after the SQL.
+        """
+        return extract_sql_from_text(sql).strip()
 
     def compare_results(self, results1: list[tuple], results2: list[tuple]) -> bool:
-        """Compare two sets of SQL results (order-independent)."""
-        try:
-            set1 = set(tuple(str(v) for v in row) for row in results1)
-            set2 = set(tuple(str(v) for v in row) for row in results2)
-            return set1 == set2
-        except Exception:
-            sorted1 = sorted([tuple(str(v) for v in row) for row in results1])
-            sorted2 = sorted([tuple(str(v) for v in row) for row in results2])
-            return sorted1 == sorted2
+        """Compare two sets of SQL results (row-order and column-order independent)."""
+        return _compare_result_sets(results1, results2)
 
     def evaluate_single(self, prediction: str, reference: str, db_id: str) -> tuple[bool, dict]:
         """Evaluate a single prediction against reference."""

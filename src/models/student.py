@@ -190,6 +190,7 @@ class StudentModel:
         top_k: int = 50,
         do_sample: bool = True,
         stop_strings: list[str] | None = None,
+        repetition_penalty: float = 1.2,
     ) -> str:
         """
         Generate a response for the given prompt.
@@ -202,6 +203,7 @@ class StudentModel:
             top_k: Top-k sampling.
             do_sample: Whether to use sampling.
             stop_strings: Optional stop strings.
+            repetition_penalty: Penalty for repeated tokens (1.0 = no penalty).
 
         Returns:
             Generated response text.
@@ -234,6 +236,7 @@ class StudentModel:
                 top_p=top_p if do_sample else None,
                 top_k=top_k if do_sample else None,
                 do_sample=do_sample,
+                repetition_penalty=repetition_penalty,
                 pad_token_id=self.tokenizer.pad_token_id,
                 eos_token_id=self.tokenizer.eos_token_id,
             )

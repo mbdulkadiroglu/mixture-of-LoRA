@@ -135,9 +135,21 @@ class DatasetLoader:
             except Exception as e:
                 logger.warning(f"Failed to load BIRD schemas from {tables_path}: {e}")
 
+    @staticmethod
+    def _needs_backticks(name: str) -> bool:
+        """Check if a SQL identifier needs backticks due to special characters."""
+        return any(c in name for c in ' ()%/-')
+
+    def _backtick(self, name: str) -> str:
+        """Wrap name in backticks if it contains special characters."""
+        return f"`{name}`" if self._needs_backticks(name) else name
+
     def get_bird_schema_string(self, db_id: str) -> str:
         """
         Get a formatted schema string for a BIRD database in CREATE TABLE format.
+
+        Uses backticks for identifiers with special characters, and annotates
+        [PRIMARY KEY] and [FOREIGN KEY -> table.column] for metadata.
 
         Args:
             db_id: Database identifier.
@@ -156,11 +168,97 @@ class DatasetLoader:
         primary_keys = schema.get("primary_keys", [])
         foreign_keys = schema.get("foreign_keys", [])
 
-        # Build column index to table mapping for FK resolution
+        # Build column index to (table_name, col_name) mapping for FK resolution
         col_to_table = {}
         for col_idx, (table_idx, col_name) in enumerate(columns):
             if table_idx >= 0:
                 col_to_table[col_idx] = (tables[table_idx], col_name)
+
+        # Flatten primary keys (can be int or list)
+        pk_set = set()
+        for pk in primary_keys:
+            if isinstance(pk, list):
+                pk_set.update(pk)
+            else:
+                pk_set.add(pk)
+
+        # Build FK mapping: column_idx -> ref_column_idx
+        fk_map = {}
+        for fk in foreign_keys:
+            if len(fk) == 2:
+                from_col, to_col = fk
+                fk_map[from_col] = to_col
+
+        schema_lines = []
+        for table_idx, table_name in enumerate(tables):
+            table_name_fmt = self._backtick(table_name)
+
+            col_defs = []
+            for col_idx, (col_table_idx, col_name) in enumerate(columns):
+                if col_table_idx == table_idx:
+                    col_type = column_types[col_idx] if col_idx < len(column_types) else "TEXT"
+                    col_type = col_type.upper()
+                    col_name_fmt = self._backtick(col_name)
+
+                    col_def = f"  {col_name_fmt} {col_type}"
+
+                    # Get description if different from original name
+                    if col_idx < len(column_descriptions):
+                        _, desc_name = column_descriptions[col_idx]
+                        if desc_name and desc_name != col_name and desc_name != "*":
+                            col_def += f"  -- {desc_name}"
+
+                    # Mark primary key
+                    if col_idx in pk_set:
+                        col_def += " [PRIMARY KEY]"
+
+                    # Mark foreign key with reference
+                    if col_idx in fk_map:
+                        ref_col_idx = fk_map[col_idx]
+                        if ref_col_idx in col_to_table:
+                            ref_table, ref_col = col_to_table[ref_col_idx]
+                            ref_table_fmt = self._backtick(ref_table)
+                            ref_col_fmt = self._backtick(ref_col)
+                            col_def += f" [FOREIGN KEY -> {ref_table_fmt}.{ref_col_fmt}]"
+
+                    col_defs.append(col_def)
+
+            if col_defs:
+                create_stmt = f"CREATE TABLE {table_name_fmt} (\n" + ",\n".join(col_defs) + "\n);"
+                schema_lines.append(create_stmt)
+
+        return "\n\n".join(schema_lines)
+
+    def get_schema_string(self, db_id: str) -> str:
+        """
+        Get a formatted schema string for a Spider database in CREATE TABLE format.
+
+        Includes primary key and foreign key information for richer schema context.
+
+        Args:
+            db_id: Database identifier.
+
+        Returns:
+            Formatted schema string for prompts (SQLite CREATE TABLE syntax).
+        """
+        if db_id not in self._schemas:
+            return ""
+
+        schema = self._schemas[db_id]
+        tables = schema["tables"]
+        columns = schema["columns"]
+        column_types = schema["column_types"]
+        primary_keys = schema.get("primary_keys", [])
+        foreign_keys = schema.get("foreign_keys", [])
+
+        # Build column index to table mapping for FK resolution
+        col_to_table = {}
+        for col_idx, (table_idx, col_name) in enumerate(columns):
+            if table_idx >= 0:
+                t_name = tables[table_idx]
+                if isinstance(t_name, list):
+                    t_name = t_name[1] if len(t_name) > 1 else t_name[0]
+                col_to_table[col_idx] = (t_name, col_name)
 
         # Flatten primary keys (can be int or list)
         pk_set = set()
@@ -180,29 +278,23 @@ class DatasetLoader:
 
         lines = []
         for table_idx, table_name in enumerate(tables):
+            if isinstance(table_name, list):
+                table_name = table_name[1] if len(table_name) > 1 else table_name[0]
+
             col_defs = []
             for col_idx, (col_table_idx, col_name) in enumerate(columns):
                 if col_table_idx == table_idx:
                     col_type = column_types[col_idx] if col_idx < len(column_types) else "TEXT"
                     col_type = col_type.upper()
 
-                    # Get description if different from original name
-                    desc = ""
-                    if col_idx < len(column_descriptions):
-                        _, desc_name = column_descriptions[col_idx]
-                        if desc_name != col_name and desc_name != "*":
-                            desc = f"  -- {desc_name}"
-
-                    # Check if primary key
                     pk_suffix = " PRIMARY KEY" if col_idx in pk_set else ""
 
-                    # Check if foreign key
                     fk_suffix = ""
                     if col_idx in fk_map:
                         ref_table, ref_col = fk_map[col_idx]
                         fk_suffix = f" REFERENCES {ref_table}({ref_col})"
 
-                    col_defs.append(f"  {col_name} {col_type}{pk_suffix}{fk_suffix}{desc}")
+                    col_defs.append(f"  {col_name} {col_type}{pk_suffix}{fk_suffix}")
 
             if col_defs:
                 lines.append(f"CREATE TABLE {table_name} (")
@@ -211,42 +303,6 @@ class DatasetLoader:
                 lines.append("")
 
         return "\n".join(lines).strip()
-
-    def get_schema_string(self, db_id: str) -> str:
-        """
-        Get a formatted schema string for a database.
-
-        Args:
-            db_id: Database identifier.
-
-        Returns:
-            Formatted schema string for prompts.
-        """
-        if db_id not in self._schemas:
-            return ""
-
-        schema = self._schemas[db_id]
-        tables = schema["tables"]
-        columns = schema["columns"]
-        column_types = schema["column_types"]
-
-        lines = []
-        for table_idx, table_name in enumerate(tables):
-            if isinstance(table_name, list):
-                table_name = table_name[1] if len(table_name) > 1 else table_name[0]
-
-            # Get columns for this table
-            table_columns = []
-            for col_idx, (col_table_idx, col_name) in enumerate(columns):
-                if col_table_idx == table_idx:
-                    col_type = column_types[col_idx] if col_idx < len(column_types) else "text"
-                    table_columns.append(f"{col_name} ({col_type})")
-
-            if table_columns:
-                lines.append(f"Table: {table_name}")
-                lines.append(f"  Columns: {', '.join(table_columns)}")
-
-        return "\n".join(lines)
 
     def load_spider(
         self,
@@ -372,6 +428,7 @@ class DatasetLoader:
             Processed examples with schema-augmented prompts.
         """
         processed = []
+        schema_missing_count = 0
 
         for ex in examples:
             db_id = ex["db_id"]
@@ -387,6 +444,8 @@ class DatasetLoader:
 
 Convert this question to SQL: {question}"""
             else:
+                if include_schema:
+                    schema_missing_count += 1
                 prompt = f"Convert this question to SQL: {question}"
 
             # Create training text in chat format
@@ -402,6 +461,12 @@ Convert this question to SQL: {question}"""
                 "text": text,
                 "prompt": prompt,
             })
+
+        if schema_missing_count > 0:
+            logger.warning(
+                f"Schema missing for {schema_missing_count}/{len(examples)} Spider examples. "
+                f"Prompts will not include database schema."
+            )
 
         return processed
 
@@ -680,6 +745,54 @@ Convert this question to SQL: {question}"""
             description="BIRD text-to-SQL benchmark (local)",
         )
 
+    @staticmethod
+    def _build_bird_prompt(schema: str, question: str, evidence: str = "") -> str:
+        """
+        Build a rich inline prompt for BIRD SQL generation.
+
+        Matches the proven LoRA_SGD format: all instructions inline in the user
+        message, with explicit SQLite dialect guidance and a "SQL Query:" anchor.
+
+        Args:
+            schema: Formatted schema string with metadata annotations.
+            question: Natural language question.
+            evidence: Optional evidence/hint text.
+
+        Returns:
+            Rich prompt string containing all context and instructions.
+        """
+        message = f"""You are a SQL expert. Given a database schema, write a query to answer the question.
+**You MUST write SQL for the SQLite dialect.**
+
+Database Schema (with metadata):
+{schema}
+
+Schema Notes:
+- [PRIMARY KEY] indicates the primary key column(s)
+- [FOREIGN KEY -> table.column] indicates relationships between tables
+- Comments after -- provide human-readable descriptions
+
+"""
+        if evidence:
+            message += f"""**IMPORTANT — Evidence (use this to interpret the question):**
+{evidence}
+
+"""
+        message += f"""Question: {question}
+
+Instructions:
+1. Use the EXACT table and column names from the schema — do not guess or abbreviate.
+2. Use JOIN clauses when querying multiple related tables. Trace FOREIGN KEY paths step by step for multi-table queries.
+3. For "most/least/highest/lowest" queries, prefer ORDER BY + LIMIT 1 over subqueries.
+4. Use COUNT(DISTINCT x) when counting unique entities that may appear multiple times due to JOINs.
+5. For percentage calculations, use CAST(SUM(CASE WHEN condition THEN 1 ELSE 0 END) AS REAL) * 100 / COUNT(*).
+6. Match string values EXACTLY as given in the evidence, including case and padding (e.g., '0040' not '40').
+7. Return ONLY the columns asked for — no extra columns, aliases, or formatting.
+8. Return ONLY the SQL query. No explanations, no markdown, no code blocks.
+
+SQL Query:"""
+        return message
+
     def _process_bird_examples(
         self,
         examples: list[dict],
@@ -698,6 +811,7 @@ Convert this question to SQL: {question}"""
             Processed examples with schema-augmented prompts.
         """
         processed = []
+        schema_missing_count = 0
 
         for ex in examples:
             db_id = ex["db_id"]
@@ -706,20 +820,22 @@ Convert this question to SQL: {question}"""
             evidence = ex.get("evidence", "")
             difficulty = ex.get("difficulty", "unknown")
 
-            # Build the prompt with optional schema and evidence
-            prompt_parts = []
-
+            # Build rich inline prompt (all instructions in user message)
             if include_schema and db_id in self._bird_schemas:
                 schema_str = self.get_bird_schema_string(db_id)
-                prompt_parts.append(f"Database schema:\n{schema_str}")
+            elif include_schema:
+                schema_missing_count += 1
+                schema_str = ""
+            else:
+                schema_str = ""
 
-            if include_evidence and evidence:
-                prompt_parts.append(f"Hint: {evidence}")
+            prompt = self._build_bird_prompt(
+                schema=schema_str,
+                question=question,
+                evidence=evidence if include_evidence else "",
+            )
 
-            prompt_parts.append(f"Question: {question}")
-            prompt = "\n\n".join(prompt_parts)
-
-            # Create training text in chat format
+            # Create training text in chat format (user-only, no system message)
             text = f"""<|im_start|>user
 {prompt}<|im_end|>
 <|im_start|>assistant
@@ -735,6 +851,13 @@ Convert this question to SQL: {question}"""
                 "text": text,
                 "prompt": prompt,
             })
+
+        if schema_missing_count > 0:
+            logger.warning(
+                f"Schema missing for {schema_missing_count}/{len(examples)} BIRD examples. "
+                f"Prompts will not include database schema. "
+                f"Ensure bird_data/ with *_tables.json is available."
+            )
 
         return processed
 

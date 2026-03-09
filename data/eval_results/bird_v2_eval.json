@@ -1,0 +1,14 @@
+{
+  "adapter_name": "text_to_sql_bird_v2",
+  "adapter_path": "/data/mehmet/projects/mixture-of-LoRA/data/lora_adapters/text_to_sql_bird/text_to_sql_bird_v2",
+  "adapter_version": 2,
+  "domain": "text_to_sql_bird",
+  "score": 0.438722294654498,
+  "correct": 673,
+  "total": 1534,
+  "gpu": "NVIDIA RTX 6000 Ada (GPU 2)",
+  "timestamp": "2026-02-10T10:21:16.571443",
+  "details": {
+    "metric": "execution_accuracy"
+  }
+}

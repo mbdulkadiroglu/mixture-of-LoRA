@@ -235,6 +235,13 @@ class AdapterManager:
         adapter = self.get_adapter(domain)
         return adapter.path if adapter else None
 
+    def get_adapter_by_path(self, domain: str, path: str) -> AdapterInfo | None:
+        """Get adapter by its file path."""
+        for adapter in self._adapters.get(domain, []):
+            if adapter.path == str(path):
+                return adapter
+        return None
+
     def list_adapters(self, domain: str | None = None) -> list[AdapterInfo]:
         """
         List all adapters, optionally filtered by domain.
