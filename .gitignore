@@ -41,6 +41,7 @@ env/
 .env.local
 
 # Data and models (large files)
+data/routerbench_cache/
 data/lora_adapters/
 data/training_data/
 data/checkpoints/
