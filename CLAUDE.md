@@ -150,7 +150,16 @@ GPUs 0, 1, 2, 3 are all available. Use each experiment's `--gpu` flag or set `CU
 - **Always use tmux** for any process that isn't instant (training, evaluation, experiments)
 - Use `tmux new-session -d -s <name> "<command>"` to start, `tmux capture-pane -t <name> -p` to check output
 
-### Code Review (Codex)
-- After completing code changes, commit to the current branch, push, and open a PR (or update the existing open PR) against `main`
-- Codex auto-reviews each push — a single PR with incremental commits is fine
-- When asked to address review feedback, read PR comments with `gh api repos/<owner>/<repo>/pulls/<number>/comments` and `gh api repos/<owner>/<repo>/pulls/<number>/reviews`, fix the issues, then push new commits to the same branch
+### Commits & Code Review
+- For non-trivial changes, make exactly one commit for the task with message `claude: <task-name>`
+- Use a dedicated branch only for large, risky, or easily separable tasks; otherwise stay on the current branch
+- If the user wants GitHub review, push the branch and open or update a PR against `main`
+- If Codex automatic review is enabled for the repo, expect review on each push; otherwise use `@codex review`
+- If review is expected, stop after committing or pushing and report:
+  - branch name
+  - commit hash
+  - files changed
+  - review commands:
+    - `git show --stat --patch <commit>`
+    - `git diff --check <commit>^..<commit>`
+- When asked to address PR feedback, inspect PR comments with `gh` if available, fix the issues, and push a new commit to the same branch
