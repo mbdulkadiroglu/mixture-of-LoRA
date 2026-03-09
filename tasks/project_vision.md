@@ -84,10 +84,10 @@ Route queries to the student first; if it fails, cascade to the teacher. **Use t
 | Task | Status | Evidence |
 |------|--------|----------|
 | Teacher model integration | DONE | GPT-5 mini via OpenAI Responses API |
-| Training example collection | DONE | `framework.py:286-301` collects teacher responses |
-| Replay buffer | DONE | `utils.py:217-273`, max 1000, domain-balanced eviction |
-| Online training loop | PARTIAL | `trainer.py:165-209` exists but not auto-triggered |
-| Automatic cascade pipeline | NOT DONE | Manual training only, no automatic loop |
+| Training example collection | DONE | `cascade/runner.py` builds and logs teacher-derived training examples |
+| Replay buffer | DONE | `cascade/replay_buffer.py` mixed into per-round training |
+| Online training loop | DONE | `cascade/runner.py` runs route → train → eval over rounds |
+| Automatic cascade pipeline | DONE | `CascadeRunner` is the end-to-end experiment loop |
 
 ### Phase 3: Adaptive Router
 > "Try to build an adaptive router (if possible)."
@@ -96,12 +96,12 @@ Router that dynamically adjusts confidence thresholds based on student improveme
 
 | Task | Status | Evidence |
 |------|--------|----------|
-| Stats-based routing | DONE | Tracks success_rate, requires 10+ queries for trust |
-| Perplexity-based routing | DONE | Converts student perplexity to confidence score |
-| Self-eval routing (teacher judges) | DONE | Teacher rates query difficulty |
-| Automatic threshold adaptation | NOT DONE | Threshold is static 0.7 |
-| Retraining trigger | PARTIAL | `should_retrain()` exists but nothing calls it |
-| ML-based router/classifier | NOT DONE | Placeholder only |
+| Confidence extraction from student generations | DONE | `cascade/student.py` exposes log-prob and entropy signals |
+| Threshold-based routing | DONE | `cascade/router.py` supports fixed confidence thresholds |
+| Percentile-based batch routing stand-in | DONE | `cascade/router.py` routes the bottom target-rate fraction to teacher |
+| Automatic threshold adaptation | NOT DONE | `CascadeConfig.adaptive_threshold` is still a placeholder |
+| Learned router/classifier | NOT DONE | No trained adaptive router yet |
+| Router feedback without ground truth | NOT DONE | Current experiments avoid this by using fixed thresholds or cascade-rate schedules |
 
 ### Phase 4: Mathematical Framework & Analysis
 > "Need mathematical proofs etc."
@@ -179,16 +179,15 @@ Router that dynamically adjusts confidence thresholds based on student improveme
 ```
 YOUR VISION                          CODEBASE
 ─────────────────────────────────────────────────────────
-Query                          →     framework.process_query()
-Router (adaptive)              →     src/router/router.py (4 strategies)
-  confidence check             →       route() → RoutingDecision.confidence
-  threshold                    →       config.router.confidence_threshold (0.7)
-Small Model + LoRA             →     src/models/student.py (Qwen 2.5 14B)
-  domain adapters              →       data/lora_adapters/{domain}/latest/
-Big Model (as small as possible)→    src/models/teacher.py (GPT-5 mini)
-Train: distill teacher → student →   training/trainer.py + utils.py replay buffer
-Train: update router stats     →     router.update_stats()
-Evaluate & feedback            →     src/evaluation/ (SQL executor, metrics)
+Round-based cascade experiment →     cascade/runner.py
+Router stand-in                →     cascade/router.py
+  confidence check             →       cascade/student.py → GenerationResult
+  threshold / schedule         →       cascade/config.py
+Small Model + LoRA             →     src/models/student.py + cascade/student.py
+Big Model                      →     src/models/teacher.py + cascade/teacher.py
+Train: distill teacher → student →   cascade/trainer.py + src/training/*
+Replay buffer                  →     cascade/replay_buffer.py
+Evaluate & feedback            →     cascade/evaluator.py + src/evaluation/sql_executor.py
 ```
 
 ---
@@ -202,8 +201,8 @@ Evaluate & feedback            →     src/evaluation/ (SQL executor, metrics)
 | Teacher model (GPT-5 mini) | Production | Measure per-query cost |
 | Ground truth training | Validated | Train on more data, hyperparameter sweep |
 | Evaluation pipeline | Production | Add difficulty-stratified metrics |
-| Router (stats/perplexity/self_eval) | Prototype | Make adaptive, add auto-threshold |
-| Online learning loop | Scaffolded | Wire up automatic cascade → train pipeline |
+| Router (threshold + percentile stand-in) | Prototype | Replace with a learned or adaptive router |
+| Online learning loop | Experiment-ready | Study convergence and failure conditions, not just wiring |
 | Replay buffer | Implemented | Test catastrophic forgetting prevention |
 | Cost analysis | Not started | Build cost tracking into framework |
 | Mathematical framework | Not started | Literature review, formalize routing policy |
@@ -212,9 +211,9 @@ Evaluate & feedback            →     src/evaluation/ (SQL executor, metrics)
 
 ## Immediate Next Steps (Priority Order)
 
-1. **Wire the cascade loop end-to-end**: Query → student tries → if uncertain, cascade to teacher → teacher response becomes training data → retrain student → router adapts. This is the core thesis. The student learns from the teacher, not from ground truth.
-2. **Run teacher distillation experiment**: Collect teacher responses, train student on them, measure improvement. This validates that the small model can learn from the large model.
-3. **Build cost tracking**: Log every inference (student/teacher) with latency + token count. Needed for cost-efficiency analysis.
-4. **Adaptive threshold prototype**: After each training round, re-evaluate and adjust router threshold based on new success_rate.
-5. **Expand to additional domains**: Demonstrate that the framework is domain-agnostic by testing on math reasoning and code generation — domains without convenient execution-based oracles.
-6. **Formalize the research questions**: Write 1-page problem statement with notation for the routing policy, cost model, and learning dynamics.
+1. **Study the current cascade loop as a dynamical system**: measure when online distillation improves the student, when it destabilizes, and how routing changes the future training distribution.
+2. **Replace the percentile stand-in with a real adaptive router**: move from fixed thresholds and scheduled cascade rates to a policy that reacts to student improvement.
+3. **Build cost tracking**: log teacher usage, latency, and training cost so the research question includes quality-cost tradeoffs.
+4. **Measure training-signal quality explicitly**: quantify teacher correctness, noise, and drift over rounds to explain convergence or collapse.
+5. **Expand to additional domains**: test whether the same loop works beyond text-to-SQL once the routing and cost story is solid.
+6. **Formalize the research questions**: write the problem statement with notation for routing, learning dynamics, and convergence criteria.

@@ -1,20 +1,5 @@
-"""
-Evaluation module for measuring model performance.
-"""
+"""Execution-based SQL evaluation helpers used by the cascade code."""
 
-from .evaluator import Evaluator, EvaluationResult
-from .sql_executor import (
-    SQLExecutor,
-    get_spider_executor,
-    BIRDExecutor,
-    get_bird_executor,
-)
+from .sql_executor import BIRDExecutor, SQLExecutor, get_bird_executor, get_spider_executor
 
-__all__ = [
-    "Evaluator",
-    "EvaluationResult",
-    "SQLExecutor",
-    "get_spider_executor",
-    "BIRDExecutor",
-    "get_bird_executor",
-]
+__all__ = ["SQLExecutor", "get_spider_executor", "BIRDExecutor", "get_bird_executor"]

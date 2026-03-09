@@ -34,7 +34,6 @@ cascade/                     # All experiment code and data
 ├── prompts.py               # Prompt templates (bird_json, spider, etc.)
 ├── replay_buffer.py         # Experience replay to mitigate catastrophic forgetting
 ├── logger.py                # SQLite logging for per-query interaction data
-├── storage_cleanup.py       # Adapter checkpoint cleanup
 ├── calibrate.py             # Router threshold calibration
 ├── analysis/                # Comparison and plotting tools
 ├── phase0/                  # Verification experiments
@@ -47,11 +46,9 @@ cascade/                     # All experiment code and data
 │   └── precache_bird_teacher.py  # Pre-generate teacher responses
 ├── phase2/                  # (planned) Teacher noise tolerance
 ├── phase3/                  # (planned) Adaptive routing
-├── scripts/                 # Utility scripts (recording responses, evaluation, analysis)
 └── results/                 # All experiment outputs
-    ├── exp_*/               # Per-experiment dirs (SQLite DBs, configs, replay buffers)
-    ├── *_responses_*.json   # Recorded teacher/student responses
     ├── bird_train_teacher_cache.json  # Pre-cached teacher responses for sweeps
+    ├── experiment_archive_summary.json  # Archived per-experiment summaries after raw exp dirs are removed
     ├── sweep_results.json   # Aggregated sweep experiment results
     ├── sweep_report.md      # Hyperparameter sweep findings report
     └── phase1_report.md     # Phase 1 experiment report
@@ -70,8 +67,7 @@ bird_data/                   # BIRD benchmark databases (needed for SQL executio
 spider_data/                 # Spider benchmark databases
 tasks/
 ├── project_vision.md        # Full research vision, phased roadmap, open questions
-├── lessons.md               # Patterns learned from past mistakes
-└── todo.md                  # Current task tracking
+└── lessons.md               # Patterns learned from past mistakes
 ```
 
 ## Common Commands
@@ -88,13 +84,6 @@ python -m cascade.phase1.exp_bird_sweep --config all --gpu 2
 
 # Pre-cache teacher responses (eliminates per-round inference cost)
 python -m cascade.phase1.precache_bird_teacher --gpu 2 --resume
-
-# Save sweep results to JSON
-python -m cascade.scripts.save_sweep_results
-
-# Record teacher/student responses
-python -m cascade.scripts.record_ollama_responses --model gpt-oss:120b --dataset bird --split dev --gpu 2
-python -m cascade.scripts.record_student_responses --dataset bird --split dev --gpu 2
 
 # Lint and format
 ruff check src/ cascade/
@@ -143,7 +132,7 @@ GPUs 0, 1, 2, 3 are all available. Use each experiment's `--gpu` flag or set `CU
 ### Planning & Execution
 - Enter plan mode for ANY non-trivial task (3+ steps or architectural decisions)
 - If something goes sideways, STOP and re-plan immediately
-- Write plan to `tasks/todo.md` with checkable items, verify before implementing
+- Keep a short checkable plan in the current conversation or a temporary working note, and verify before implementing
 - Track progress by marking items complete, document results
 
 ### Verification
@@ -161,3 +150,7 @@ GPUs 0, 1, 2, 3 are all available. Use each experiment's `--gpu` flag or set `CU
 - **Always use tmux** for any process that isn't instant (training, evaluation, experiments)
 - Use `tmux new-session -d -s <name> "<command>"` to start, `tmux capture-pane -t <name> -p` to check output
 
+### Code Review (Codex)
+- After completing code changes, commit to the current branch, push, and open a PR (or update the existing open PR) against `main`
+- Codex auto-reviews each push — a single PR with incremental commits is fine
+- When asked to address review feedback, read PR comments with `gh api repos/<owner>/<repo>/pulls/<number>/comments` and `gh api repos/<owner>/<repo>/pulls/<number>/reviews`, fix the issues, then push new commits to the same branch

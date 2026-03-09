@@ -1,7 +1,3 @@
-"""
-Adaptive Small Language Model Framework
-
-A framework for training domain-specific LoRA adapters using teacher-student learning.
-"""
+"""Shared code used by the cascade distillation experiments."""
 
 __version__ = "0.1.0"
