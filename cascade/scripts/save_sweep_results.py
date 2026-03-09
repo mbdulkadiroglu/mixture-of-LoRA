@@ -7,7 +7,7 @@ from pathlib import Path
 import yaml
 
 
-def save_results(output_path: str = "results/cascade/sweep_results.json"):
+def save_results(output_path: str = "cascade/results/sweep_results.json"):
     all_results = {}
     for d in sorted(Path("results/cascade").glob("exp_sweep_*")):
         dbs = list(d.glob("*.db"))

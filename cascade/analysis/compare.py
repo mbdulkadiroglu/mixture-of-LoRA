@@ -50,7 +50,7 @@ def _load_round_data(db_path: str | Path) -> dict:
 def compare_experiments(
     db_paths: list[str | Path],
     labels: list[str] | None = None,
-    output_dir: str | Path = "results/cascade/comparison",
+    output_dir: str | Path = "cascade/results/comparison",
 ) -> None:
     """Generate multi-experiment comparison plots."""
     output_dir = Path(output_dir)
@@ -128,7 +128,7 @@ def main():
     parser = argparse.ArgumentParser(description="Compare multiple cascade experiments")
     parser.add_argument("db_paths", nargs="+", help="Paths to experiment .db files")
     parser.add_argument("--labels", nargs="+", default=None)
-    parser.add_argument("--output", default="results/cascade/comparison")
+    parser.add_argument("--output", default="cascade/results/comparison")
     args = parser.parse_args()
 
     compare_experiments(args.db_paths, args.labels, args.output)

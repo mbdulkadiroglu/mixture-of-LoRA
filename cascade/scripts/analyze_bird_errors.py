@@ -10,8 +10,8 @@ import sys
 from collections import Counter, defaultdict
 from pathlib import Path
 
-RESULTS_PATH = Path("results/cascade/gpt-oss_120b_responses_bird_dev_fewshot.json")
-OUTPUT_PATH = Path("results/cascade/bird_dev_fewshot_error_analysis.json")
+RESULTS_PATH = Path("cascade/results/gpt-oss_120b_responses_bird_dev_fewshot.json")
+OUTPUT_PATH = Path("cascade/results/bird_dev_fewshot_error_analysis.json")
 
 
 def load_data():

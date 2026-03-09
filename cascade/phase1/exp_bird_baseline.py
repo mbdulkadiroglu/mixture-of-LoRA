@@ -64,7 +64,7 @@ def main():
 
     threshold = args.threshold
     if threshold is None:
-        cal_path = Path("results/cascade/calibration_bird.json")
+        cal_path = Path("cascade/results/calibration_bird.json")
         if cal_path.exists():
             with open(cal_path) as f:
                 cal = json.load(f)

@@ -270,7 +270,7 @@ def main():
 
     parser = argparse.ArgumentParser(description="Generate Phase 1 analysis plots")
     parser.add_argument("--experiments", nargs="+", help="Paths to experiment directories or DB files")
-    parser.add_argument("--output", default="results/cascade/plots")
+    parser.add_argument("--output", default="cascade/results/plots")
     args = parser.parse_args()
 
     if not args.experiments:

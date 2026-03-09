@@ -42,7 +42,7 @@ from src.evaluation.sql_cleaning import extract_sql_from_text
 from src.evaluation.sql_executor import BIRDExecutor, get_spider_executor
 from src.models.teacher import TeacherModel
 
-DEFAULT_OUTPUT = "results/cascade/teacher_responses_spider_train.json"
+DEFAULT_OUTPUT = "cascade/results/teacher_responses_spider_train.json"
 SAVE_EVERY = 20
 
 
@@ -113,7 +113,7 @@ def main():
         dataset_label, split_label = "spider", "train"
 
     if args.output is None:
-        args.output = f"results/cascade/teacher_responses_{dataset_label}_{split_label}.json"
+        args.output = f"cascade/results/teacher_responses_{dataset_label}_{split_label}.json"
     output_path = Path(args.output)
 
     print("=" * 60)

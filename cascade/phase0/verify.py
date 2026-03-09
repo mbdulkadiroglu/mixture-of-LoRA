@@ -31,7 +31,7 @@ def verify():
         eval_set_size=5,
         training_pool_size=100,
         training_epochs=1,
-        output_dir="results/cascade/phase0",
+        output_dir="cascade/results/phase0",
         gpu_devices=os.getenv("CASCADE_GPU", "2"),
     )
 

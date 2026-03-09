@@ -15,7 +15,7 @@ Usage:
 
 from cascade.config import CascadeConfig
 
-TEACHER_CACHE_PATH = "results/cascade/bird_train_teacher_cache.json"
+TEACHER_CACHE_PATH = "cascade/results/bird_train_teacher_cache.json"
 
 SWEEP_CONFIGS = {
     "low_lr": {

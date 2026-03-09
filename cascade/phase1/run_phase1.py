@@ -40,7 +40,7 @@ def run_phase1(threshold: float | None = None, gpu: str | None = None):
 
     # Load calibrated threshold if available
     if threshold is None:
-        cal_path = Path("results/cascade/calibration.json")
+        cal_path = Path("cascade/results/calibration.json")
         if cal_path.exists():
             with open(cal_path) as f:
                 cal = json.load(f)
@@ -85,7 +85,7 @@ def run_phase1(threshold: float | None = None, gpu: str | None = None):
             torch.cuda.empty_cache()
 
     # Save summary
-    summary_path = Path("results/cascade/phase1_summary.json")
+    summary_path = Path("cascade/results/phase1_summary.json")
     summary_path.parent.mkdir(parents=True, exist_ok=True)
     with open(summary_path, "w") as f:
         json.dump(results, f, indent=2)

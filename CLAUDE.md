@@ -1,21 +1,78 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+## Research Goal
 
-## Project Overview
+**Research question**: Under what conditions does cascade-based online distillation converge, and when does distribution shift from improved routing degrade the training signal enough to stall or reverse learning?
 
-An adaptive teacher-student framework where a large model (GPT-5 mini) improves a small model (Qwen 2.5 14B + LoRA) through online distillation. The core thesis: **when the router sends a query to the big model, use that response to train the small model.** Over time, the student improves, the router sends fewer queries to the teacher, and inference cost drops.
+**Core idea**: When a router decides the small model (student) isn't confident enough and defers a query to the big model (teacher), use that teacher response to train the student. Over time the student improves, fewer queries go to the teacher, and inference cost drops.
 
-The system is **domain-agnostic by design**. Text-to-SQL (Spider, BIRD) is the current test domain because it has convenient evaluation infrastructure, but the framework applies to any task where a larger model outperforms a smaller one.
+This is **domain-agnostic online distillation** — the student learns from the teacher's responses, not from ground truth labels. Text-to-SQL (Spider, BIRD) is the test domain because it has convenient execution-based evaluation, but the approach applies to any task where a larger model outperforms a smaller one.
 
-- A **Router** that decides whether the student or teacher handles each query
-- A **Student Model** (Qwen 2.5 14B + LoRA) for domain-specific tasks
-- A **Teacher Model** (GPT-5 mini) for complex queries and training data generation
-- **Online Learning** to continuously improve the student from teacher responses
+**The scientific challenge** is a coupled feedback loop:
+1. The router decides which queries go to the teacher
+2. That determines what training data the student receives
+3. Training shifts the student's confidence distribution
+4. That changes future routing decisions and training data
 
-Test domains: `text_to_sql` (Spider + BIRD), `math_reasoning` (GSM8K), `code_generation` (MBPP).
+Routing and learning co-evolve. This creates failure modes like distribution shift under fixed thresholds and catastrophic forgetting from noisy teacher signal. Understanding when this loop converges vs degrades is the core contribution.
 
-**Hardware**: Requires 4x NVIDIA RTX 6000 Ada GPUs (~196GB VRAM), CUDA 12.0+, Python 3.10+.
+**Ideally**, an adaptive router learns to route queries optimally as the student improves. For now, the experiments use a temporary stand-in: the student generates responses for an entire batch, all queries are sorted by confidence (mean token log-prob), and the bottom N% are sent to the teacher. The cascade rate interpolates linearly from `cascade_rate_start` to `cascade_rate_end` across rounds (e.g. 70%→30%). This percentile-based approach is a simplification that isolates the distillation dynamics — it controls how much teacher signal the student receives without needing a learned routing policy. Building a proper adaptive router is a later phase (see `tasks/project_vision.md`).
+
+See `tasks/project_vision.md` for the full phased roadmap and open research questions.
+
+## Project Structure
+
+```
+cascade/                     # All experiment code and data
+├── runner.py                # CascadeRunner: the N-round experiment loop
+├── config.py                # CascadeConfig: single dataclass per experiment
+├── student.py               # CascadeStudent: wraps StudentModel for inference + logprobs
+├── teacher.py               # CascadeTeacher: wraps Ollama/OpenAI teacher calls
+├── trainer.py               # CascadeTrainer: per-round LoRA SFT
+├── router.py                # CascadeRouter: log-prob confidence → cascade decision
+├── evaluator.py             # CascadeEvaluator: SQL execution accuracy on frozen eval set
+├── prompts.py               # Prompt templates (bird_json, spider, etc.)
+├── replay_buffer.py         # Experience replay to mitigate catastrophic forgetting
+├── logger.py                # SQLite logging for per-query interaction data
+├── storage_cleanup.py       # Adapter checkpoint cleanup
+├── calibrate.py             # Router threshold calibration
+├── analysis/                # Comparison and plotting tools
+├── phase0/                  # Verification experiments
+├── phase1/                  # Spider baseline + BIRD sweep experiments
+│   ├── exp_1_1_baseline.py  # Teacher distillation (core hypothesis)
+│   ├── exp_1_2_static.py    # Static control (no training)
+│   ├── exp_1_3_ground_truth.py  # Ground truth training control
+│   ├── exp_bird_baseline.py # BIRD cascade baseline
+│   ├── exp_bird_sweep.py    # Hyperparameter sweep (32 configs)
+│   └── precache_bird_teacher.py  # Pre-generate teacher responses
+├── phase2/                  # (planned) Teacher noise tolerance
+├── phase3/                  # (planned) Adaptive routing
+├── scripts/                 # Utility scripts (recording responses, evaluation, analysis)
+└── results/                 # All experiment outputs
+    ├── exp_*/               # Per-experiment dirs (SQLite DBs, configs, replay buffers)
+    ├── *_responses_*.json   # Recorded teacher/student responses
+    ├── bird_train_teacher_cache.json  # Pre-cached teacher responses for sweeps
+    ├── sweep_results.json   # Aggregated sweep experiment results
+    ├── sweep_report.md      # Hyperparameter sweep findings report
+    └── phase1_report.md     # Phase 1 experiment report
+
+src/                         # Shared library (cascade depends on these)
+├── models/student.py        # StudentModel: Qwen 2.5 14B via Unsloth (4-bit quantized)
+├── models/teacher.py        # TeacherModel: OpenAI Responses API
+├── training/trainer.py      # LoRATrainer: SFT with replay buffer
+├── training/data_processor.py  # DataProcessor: chat-template formatting
+├── datasets/loader.py       # DatasetLoader: Spider/BIRD data loading + schema
+├── evaluation/sql_executor.py  # SQL execution against SQLite databases
+├── evaluation/sql_cleaning.py  # SQL extraction from model responses
+└── config.py                # LoRAConfig, TrainingConfig, etc.
+
+bird_data/                   # BIRD benchmark databases (needed for SQL execution)
+spider_data/                 # Spider benchmark databases
+tasks/
+├── project_vision.md        # Full research vision, phased roadmap, open questions
+├── lessons.md               # Patterns learned from past mistakes
+└── todo.md                  # Current task tracking
+```
 
 ## Common Commands
 
@@ -23,92 +80,63 @@ Test domains: `text_to_sql` (Spider + BIRD), `math_reasoning` (GSM8K), `code_gen
 # Activate environment
 source ~/miniconda3/bin/activate mixture-lora
 
-# Install (with dev tools)
-pip install -e ".[dev]"
+# Run a cascade experiment
+python -m cascade.phase1.exp_bird_sweep --config lr_1e6_bs32 --gpu 2
 
-# Train a domain adapter
-python main.py train --domain text_to_sql --max-samples 1000 --eval
-python main.py train --domain math_reasoning --use-teacher --epochs 3
+# Run all sweep configs sequentially
+python -m cascade.phase1.exp_bird_sweep --config all --gpu 2
 
-# Evaluate models
-python main.py evaluate --samples 100
-python main.py evaluate --include-teacher --output results.json
+# Pre-cache teacher responses (eliminates per-round inference cost)
+python -m cascade.phase1.precache_bird_teacher --gpu 2 --resume
 
-# Compare base model vs LoRA adapter
-python scripts/compare_base_vs_lora.py --mode lora --samples 100
-python scripts/compare_base_vs_lora.py --mode base --samples 100
+# Save sweep results to JSON
+python -m cascade.scripts.save_sweep_results
 
-# Diagnose model outputs
-python scripts/diagnose_eval.py --mode lora --samples 10
-
-# Interactive demo
-python main.py demo
-
-# Show framework info
-python main.py info
+# Record teacher/student responses
+python -m cascade.scripts.record_ollama_responses --model gpt-oss:120b --dataset bird --split dev --gpu 2
+python -m cascade.scripts.record_student_responses --dataset bird --split dev --gpu 2
 
 # Lint and format
-ruff check src/ scripts/ main.py
-black src/ scripts/ main.py
+ruff check src/ cascade/
+black src/ cascade/
 ```
 
-## Architecture
+## Experiment Flow
 
-### Data Flow
+Each experiment is defined by a `CascadeConfig` and run by `CascadeRunner`:
 
-1. Query enters `AdaptiveSLMFramework.process_query()` (src/framework.py)
-2. Domain is classified (keyword/regex-based, not ML) or passed explicitly
-3. Router checks adapter availability and applies routing strategy (perplexity/self_eval/stats)
-4. If confidence >= threshold (0.7): student loads domain LoRA adapter, generates response
-5. If confidence < threshold or student fails: falls back to teacher (GPT-5 mini API)
-6. **Teacher responses are collected as training data** — this is the core learning signal. The student learns from the teacher, not from ground truth labels. (Ground truth training was only used to validate that LoRA fine-tuning works at all.)
-7. `train_domain()` fine-tunes LoRA adapter via SFTTrainer, mixing new data with replay buffer (20% ratio)
+1. Load dataset, split into frozen eval set (stratified by difficulty) + training pool (shuffled deterministically by seed)
+2. Per round:
+   - Sample `queries_per_round` queries without replacement from the training pool
+   - **Pass 1**: Student generates SQL responses for all queries, collecting log-probabilities
+   - **Batch routing**: Sort all queries by confidence (mean log-prob). Route the bottom `cascade_rate`% to teacher (e.g. 70%→30% linearly over rounds). This percentile-based approach is immune to distribution shift from training.
+   - **Pass 2**: For teacher-routed queries, look up cached teacher response (or call teacher live). Build training examples from teacher responses. Check correctness of all queries against gold SQL via execution.
+3. After each round: train student LoRA on new teacher examples + replay buffer samples (SFT, completion-only loss)
+4. Evaluate on frozen eval set (execution accuracy against actual SQLite databases)
+5. Log all per-query interaction data to SQLite (3 tables: interactions, training_examples, adapter_versions), save GPU metrics to JSON
 
-### Key Modules
+### Database Schema
 
-- **src/framework.py** - `AdaptiveSLMFramework`: Main orchestrator. Entry point for all operations (query processing, training, evaluation). Coordinates all other components.
-- **src/config.py** - Typed dataclasses for all configuration. `load_config()` loads YAML then overrides with env vars (env vars take precedence).
-- **src/models/student.py** - `StudentModel`: Qwen 2.5 14B via Unsloth `FastLanguageModel` (4-bit quantization, bfloat16). Handles dynamic LoRA adapter loading/unloading.
-- **src/models/teacher.py** - `TeacherModel`: Uses OpenAI **Responses API** (`client.responses.create()`), not the Chat Completions API.
-- **src/training/data_processor.py** - `DataProcessor`: Converts raw dataset samples (Spider/BIRD/GSM8K/MBPP) into chat-templated training text. Domain-specific system prompts are defined here.
-- **src/training/trainer.py** - `LoRATrainer`: SFT training with experience replay buffer to prevent catastrophic forgetting.
-- **src/datasets/loader.py** - `DatasetLoader`: Auto-detects local data dirs (`spider_data/`, `bird_data/`), falls back to HuggingFace. Loads database schemas for text-to-sql.
-- **src/evaluation/sql_executor.py** - Executes SQL against actual SQLite databases (Spider/BIRD) for execution accuracy evaluation. Note: this is a domain-specific evaluator for the text-to-SQL test domain, not a core part of the framework.
-- **src/adapters/manager.py** - `AdapterManager`: Versioned adapter storage with registry (`data/lora_adapters/registry.json`), symlinked `latest/` directories.
+Each experiment produces a SQLite DB with:
+- **interactions**: per-query per-round — prompt, student SQL, student log-probs (mean/min/entropy), routing decision, teacher SQL, correctness (student/teacher/final)
+- **training_examples**: per-training-example — prompt, target SQL, source (teacher/gold/student), was_correct, is_replay, quality_weight
+- **adapter_versions**: per-round — eval_accuracy, training_loss, example counts, adapter path
 
-### Adapter Storage Layout
+## Hardware
 
-```
-data/lora_adapters/
-├── {domain}/{domain}_v{N}/    # Versioned adapters (PEFT weights + tokenizer)
-├── {domain}/latest/           # Symlink to best version
-├── training_runs/             # Timestamped checkpoint directories
-└── registry.json              # Metadata: scores, versions, paths
-```
-
-### Configuration Precedence
-
-1. Dataclass defaults in `src/config.py`
-2. `configs/config.yaml` overrides
-3. `.env` environment variables override (for `OPENAI_API_KEY`, `HF_TOKEN`, `TEACHER_MODEL`, `STUDENT_MODEL`, `LORA_ADAPTERS_PATH`, `ROUTER_CONFIDENCE_THRESHOLD`, `CUDA_VISIBLE_DEVICES`)
+4x NVIDIA RTX 6000 Ada GPUs (~196GB VRAM total), CUDA 12.0+, Python 3.10+.
 
 ## GPU Allocation
 
-There are 4 available GPUs (0, 1, 2, 3). You may use any of them if they are available. Note that `.env` values can override command-line environment variables if loaded with `override=True`; use each script's `--gpu` flag (or set `CUDA_VISIBLE_DEVICES`) after `.env` loads when you need to select a specific GPU.
+GPUs 0, 1, 2, 3 are all available. Use each experiment's `--gpu` flag or set `CUDA_VISIBLE_DEVICES`. Note: `.env` values can override environment variables if loaded with `override=True`.
 
 ## Code Conventions
 
-- **Critical import order**: `unsloth` must be imported before PyTorch/transformers (enables kernel optimizations). `.env` must be loaded before PyTorch initializes (controls `CUDA_VISIBLE_DEVICES` for GPU allocation). See `main.py` for the correct pattern.
+- **Critical import order**: `unsloth` must be imported before PyTorch/transformers (enables kernel optimizations). `.env` must be loaded before PyTorch initializes (controls `CUDA_VISIBLE_DEVICES`).
 - Use `loguru` for logging, not stdlib logging
 - Type hints with Python 3.10+ union syntax (`str | None`)
-- Dataclasses for structured return types (`QueryResult`, `EvaluationResult`, `TrainingExample`, `AdapterInfo`, `RoutingDecision`)
+- Dataclasses for configuration and structured return types
 - `pathlib.Path` for file paths
-
-## Current Status
-
-LoRA v3 trained on Spider text_to_sql achieves 74.18% accuracy (+5.13% over base model). Adapters stored at `data/lora_adapters/text_to_sql/text_to_sql_v3/`.
-
-Active work on `feature/bird-training` branch: BIRD dataset infrastructure is complete, training blocked on corrupted `train.zip` (can use dev set with 1534 samples). See `tasks/todo.md`.
 
 ## Workflow Guidelines
 
@@ -118,29 +146,18 @@ Active work on `feature/bird-training` branch: BIRD dataset infrastructure is co
 - Write plan to `tasks/todo.md` with checkable items, verify before implementing
 - Track progress by marking items complete, document results
 
-### Subagent Strategy
-- Offload research, exploration, and parallel analysis to subagents to keep main context clean
-- One task per subagent for focused execution
-- For complex problems, use multiple subagents
-
 ### Verification
 - Never mark a task complete without proving it works
 - Run tests, check logs, demonstrate correctness
-- Diff behavior between main and changes when relevant
 
 ### Self-Improvement
 - After ANY correction from user: update `tasks/lessons.md` with the pattern
 - Write rules that prevent the same mistake
-- Review lessons at session start
 
 ### Evaluation
-- **Always use the full test set** for evaluations unless the user explicitly requests a smaller sample size. Never default to `max_samples=100` or any other subset — pass `None` (or omit) so the entire test split is used.
+- **Always use the full test set** unless the user explicitly requests a smaller sample size
 
 ### Long-Running Processes
-- **Always use tmux** for any process that isn't instant (training, evaluation, experiments, etc.). Never run long processes as background shell tasks — they die if the session ends.
-- Use `tmux new-session -d -s <name> "<command>"` to start, `tmux capture-pane -t <name> -p` to check output.
+- **Always use tmux** for any process that isn't instant (training, evaluation, experiments)
+- Use `tmux new-session -d -s <name> "<command>"` to start, `tmux capture-pane -t <name> -p` to check output
 
-### Core Principles
-- **No Laziness**: Find root causes. No temporary fixes. Senior developer standards.
-- **Minimal Impact**: Only touch what's necessary. Avoid introducing bugs.
-- **Demand Elegance**: For non-trivial changes, ask "is there a more elegant way?" (but don't over-engineer simple fixes)

@@ -192,7 +192,7 @@ def main():
         dataset_label, split_label = "spider", "train"
 
     if args.output is None:
-        args.output = (f"results/cascade/{model_slug}_self_consistency_"
+        args.output = (f"cascade/results/{model_slug}_self_consistency_"
                        f"{dataset_label}_{split_label}_n{args.votes}.json")
     output_path = Path(args.output)
 

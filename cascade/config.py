@@ -80,7 +80,7 @@ class CascadeConfig:
     eval_every_n_rounds: int = 1
 
     # Output
-    output_dir: str = "results/cascade"
+    output_dir: str = "cascade/results"
     gpu_devices: str = "2"  # Single GPU — Unsloth fast inference crashes on multi-GPU
 
     def save(self, path: str | Path) -> None:

@@ -155,7 +155,7 @@ def main():
     parser.add_argument("--metric", default="mean_logprob")
     parser.add_argument("--target-accuracy", type=float, default=0.85)
     parser.add_argument("--gpu", default="2")
-    parser.add_argument("--output", default="results/cascade/calibration.json")
+    parser.add_argument("--output", default="cascade/results/calibration.json")
     args = parser.parse_args()
 
     os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu

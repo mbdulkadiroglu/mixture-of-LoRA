@@ -33,7 +33,9 @@
       "Bash(do echo:*)",
       "Bash(do:*)",
       "Bash(echo:*)",
-      "Bash(tmux ls:*)"
+      "Bash(tmux ls:*)",
+      "Bash(du:*)",
+      "Bash(grep:*)"
     ]
   }
 }

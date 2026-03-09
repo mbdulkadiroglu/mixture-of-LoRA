@@ -5,7 +5,7 @@ Replicates the runner's deterministic sampling logic (seed=42, shuffled pool,
 per-round Random(seed+round_idx) sampling without replacement) to identify the
 exact queries used in rounds 0–N. Then generates teacher responses via Ollama.
 
-Saves to results/cascade/bird_train_teacher_cache.json in the same format as
+Saves to cascade/results/bird_train_teacher_cache.json in the same format as
 existing response files (per_sample list with idx, db_id, question, gold_sql,
 model_sql, correct, ...).
 
@@ -156,7 +156,7 @@ def main():
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument("--model", default="gpt-oss:120b", help="Teacher model name")
     parser.add_argument("--ollama-url", default="http://localhost:11434/v1", help="Ollama URL")
-    parser.add_argument("--output", default="results/cascade/bird_train_teacher_cache.json", help="Output path")
+    parser.add_argument("--output", default="cascade/results/bird_train_teacher_cache.json", help="Output path")
     parser.add_argument("--resume", action="store_true", help="Resume from existing output file")
     parser.add_argument("--eval-size", type=int, default=350, help="Eval set size (for RNG alignment)")
     args = parser.parse_args()
